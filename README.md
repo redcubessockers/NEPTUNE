@@ -147,6 +147,24 @@ the NVIDIA fork is a separate reference, not the NEPTUNE runtime.
 frame generation throughput must not be reported as native FPS.
 no new derivative source or executable has been published.
 
+### local R45 diagnostic accounting (not published source)
+
+the previous collector drained approximately every second but printed only
+on a five-second reporting interval. R45 retains observations until the
+report, bounds retained reason keys to 128 and each key to 512 bytes, and
+counts overflow and reasons omitted from the top 40 separately. unknown
+causes remain unknown. diagnostic observations are not unique draw counts.
+
+local release workspace: 691 passed, 0 failed, 41 ignored. separate
+physical RTX 4060 D3D12 copy fixture: 1 MiB, zero mismatches.
+diagnostic pipeline tests: 6 passed. full diagnostic regression failed
+with STATUS_ACCESS_VIOLATION in the profiler stack-walk test. isolated
+R44 and R45 repetitions of that test passed 60,000 walks each; the
+failure remains unresolved and is not attributed to the new collector.
+
+no gameplay A/B, world-rendering parity or full CC0-only relicensing
+claim. no new derivative source or executable distributed.
+
 ## tree
 
 | path | purpose |
