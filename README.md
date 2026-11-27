@@ -179,6 +179,21 @@ fixture: 1 MiB, zero mismatches. The earlier access violation is not
 conclusively attributed to this defect; full stack-walk safety and
 gameplay remain unverified. No performance improvement is claimed.
 
+### local R47–R48 forensic logging (not published source)
+
+R47 adds the Windows process and native thread IDs to timed records.
+R48 seals the persistent sink under its existing mutex before writing the
+terminal session marker. A live writer after close no longer appends
+bytes to the file; late writes are counted and reported on stderr.
+The footer describes pre-close losses, not subsequent stderr events.
+
+local Windows release regression: 693 passed, 0 failed, 41 ignored.
+GPU diagnostics regression: 276 passed, 0 failed, 27 ignored.
+Separate RTX 4060 copy/readback fixture: 1 MiB, zero mismatches.
+Both local executable builds passed. No new dependency or logging worker.
+Historical session provenance, actual gameplay, world rendering and
+performance remain unverified. The source licensing boundary is unchanged.
+
 ## tree
 
 | path | purpose |
