@@ -212,6 +212,24 @@ a separate run without a skip message. Both local executable builds passed.
 No claim of gameplay, world rendering, or performance improvement.
 Source licensing and publication boundary unchanged.
 
+### local R50 bounded pipeline admission (not published source)
+
+The early-to-requested promotion now transfers its queue reference instead
+of retaining a second copy. Pending queue entries are capped at 4096.
+Speculative early work is deferred at capacity; new demand work is claimed
+for inline compilation outside the queue lock, rather than discarded due
+to admission pressure. The first and power-of-two overflow counts are
+logged. This bounds pending entries, not active compiles or memory bytes.
+Inline compilation can increase title-thread latency; no FPS gain claimed.
+
+Native Windows release regression: 697 passed, 0 failed, 41 ignored.
+GPU diagnostics regression: 280 passed, 0 failed, 27 ignored.
+Eight-thread promotion stress: 4096 distinct entries, each claimed once.
+Physical RTX 4060 copy/readback: 1 MiB, zero byte mismatches.
+Both local executable builds passed. Actual saturation through the title,
+worker shutdown, world rendering and gameplay remain unverified.
+Source licensing and publication boundary unchanged.
+
 ## tree
 
 | path | purpose |
