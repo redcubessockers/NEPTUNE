@@ -31,12 +31,12 @@ correct rendering, security, or gameplay.
 
 ## current evidence
 
-checkpoint: R39E, 2026-11-27. Windows 11 x64, Intel Core i5-12400F,
+checkpoint: R39F, 2026-11-27. Windows 11 x64, Intel Core i5-12400F,
 NVIDIA GeForce RTX 4060 8 GB. Rust 1.100.0.
 
 | boundary | evidence |
 | --- | --- |
-| workspace regression | 683 passed, 0 failed, 39 ignored (exit 0) |
+| workspace regression | 686 passed, 0 failed, 40 ignored (exit 0) |
 | source asset-policy check | 228 files passed in integrated regression |
 | physical D3D12 two-flight publication | fence ordering verified on the test GPU |
 | command-list retirement | fresh physical fixtures checked readback and completion |
@@ -50,11 +50,17 @@ path stays disabled unless `VICTORY_DETILE_AVX2=1` is explicitly set.
 unsupported CPU features and other layouts use the scalar path.
 
 R38D's four-list admission bound is integrated. the bound is a count of
-lists, not an exact memory limit; worker shutdown and starvation proof are
-still open. R39E fixes duplicate event ticks under concurrent waits. the
+lists, not an exact memory limit. R39E fixes duplicate event ticks under concurrent waits. the
 RED test observed four successful waits sharing tick 1; the corrected
 implementation delivered four distinct ticks. eight further concurrent
 rounds passed, together with seven GPU/worker fixture executions.
+R39F adds process-lifetime heap worker stop, wake and join ownership.
+The concurrent shutdown RED fixture falsely reported a live worker joined;
+GREEN returns false for the second caller until the worker is joined.
+Eight targeted executions passed on the integrated candidate, including
+five physical GPU fixtures. Shutdown does not cover forced process
+termination, and the wait budget does not bound arbitrary destructors.
+Worker starvation and full title-level lifecycle are still open.
 These are scoped tests, not an end-to-end gameplay or FPS result.
 
 ## tree

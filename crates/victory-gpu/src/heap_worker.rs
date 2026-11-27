@@ -30,7 +30,7 @@
 // than when the recording thread did it all; with a backlog it is earlier,
 // since the pass has the whole frame instead of a slice of it.
 
-use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering::{Acquire, Relaxed, Release}};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 use crate::descriptor::Heap;
@@ -61,6 +61,11 @@ fn outstanding_full(count: usize) -> bool {
 
 static OUTSTANDING: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static CAPACITY_STOPS: AtomicU64 = AtomicU64::new(0);
+static STOP: AtomicBool = AtomicBool::new(false);
+
+fn stop_requested() -> bool {
+    STOP.load(Acquire)
+}
 
 /// One list admitted to READY or waiting for descriptor publication. The
 /// token follows the list's publication metadata and releases its place on
@@ -296,6 +301,7 @@ struct Job {
 }
 
 static JOB: OnceLock<Job> = OnceLock::new();
+static THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 /// Held by whoever runs the pass.
 static PASS: Mutex<()> = Mutex::new(());
 /// Number of recording threads waiting for [`PASS`]. A successful waiter
@@ -310,11 +316,20 @@ pub(crate) fn kick(heap: &Heap) -> bool {
     if !on() {
         return false;
     }
+    // Serialize startup, admission and shutdown against the same handle.
+    let mut thread = lock(&THREAD);
+    if stop_requested() {
+        return false;
+    }
     static STARTED: OnceLock<bool> = OnceLock::new();
     let started = *STARTED.get_or_init(|| {
+        if !register_exit() {
+            return false;
+        }
         JOB.get_or_init(|| Job { heap: Mutex::new(None), wake: Condvar::new() });
         match std::thread::Builder::new().name("victory-heap".into()).spawn(worker) {
-            Ok(_) => {
+            Ok(worker_thread) => {
+                *thread = Some(worker_thread);
                 tracing::info!("textures picked by index are uploaded by a thread of their own (VICTORY_HEAP_WORKER)");
                 true
             }
@@ -327,8 +342,15 @@ pub(crate) fn kick(heap: &Heap) -> bool {
     let Some(job) = JOB.get().filter(|_| started) else {
         return false;
     };
-    *lock(&job.heap) = Some(HeldHeap::new(heap));
+    let mut next = lock(&job.heap);
+    if stop_requested() {
+        return false;
+    }
+    let replaced = next.replace(HeldHeap::new(heap));
     job.wake.notify_one();
+    drop(next);
+    drop(thread);
+    drop(replaced);
     true
 }
 
@@ -349,7 +371,7 @@ pub(crate) fn urgent() -> MutexGuard<'static, ()> {
 
 /// Whether the worker is to stop where it is ([`urgent`]).
 pub(crate) fn make_way() -> bool {
-    URGENT.load(Relaxed) != 0
+    stop_requested() || URGENT.load(Relaxed) != 0
 }
 
 fn worker() {
@@ -360,12 +382,18 @@ fn worker() {
         let heap = {
             let mut next = lock(&job.heap);
             loop {
+                if stop_requested() {
+                    return;
+                }
                 match next.take() {
                     Some(heap) => break heap,
                     None => next = job.wake.wait(next).unwrap_or_else(|e| e.into_inner()),
                 }
             }
         };
+        if stop_requested() {
+            return;
+        }
         let started = std::time::Instant::now();
         {
             let _pass = lock(&PASS);
@@ -377,9 +405,85 @@ fn worker() {
         }
         STATS[0].fetch_add(started.elapsed().as_nanos() as u64, Relaxed);
         // Whoever wants the pass now has it first.
-        while make_way() {
+        if stop_requested() {
+            return;
+        }
+        while URGENT.load(Relaxed) != 0 && !stop_requested() {
             std::thread::yield_now();
         }
+    }
+}
+
+unsafe extern "C" {
+    fn atexit(f: extern "C" fn()) -> i32;
+}
+
+fn register_exit() -> bool {
+    static AT_EXIT: OnceLock<bool> = OnceLock::new();
+    // SAFETY: registers a function with the host CRT's exit table.
+    *AT_EXIT.get_or_init(|| unsafe {
+        let registered = atexit(at_exit) == 0;
+        if !registered {
+            tracing::warn!("could not register heap worker shutdown");
+        }
+        registered
+    })
+}
+
+// Do not wait indefinitely for either lifecycle lock. Poison recovery
+// preserves the handle; timeout never masquerades as successful shutdown.
+fn lock_until<T>(m: &Mutex<T>, began: std::time::Instant, timeout: std::time::Duration)
+    -> Option<MutexGuard<'_, T>>
+{
+    loop {
+        match m.try_lock() {
+            Ok(g) => return Some(g),
+            Err(std::sync::TryLockError::Poisoned(e)) => return Some(e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let remaining = timeout.saturating_sub(began.elapsed());
+        if remaining.is_zero() { return None; }
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(1)));
+    }
+}
+
+/// Requests the process-lifetime worker to stop and waits only up to the
+/// supplied deadline. A timed-out handle remains owned, rather than being
+/// silently detached and reported as joined.
+fn shutdown_for(timeout: std::time::Duration) -> bool {
+    let began = std::time::Instant::now();
+    STOP.store(true, Release);
+    let Some(mut handle) = lock_until(&THREAD, began, timeout) else {
+        return false;
+    };
+    // The heap mutex closes the check-to-sleep race in worker(). Never
+    // remove the handle until completion is observable under THREAD.
+    let abandoned = if let Some(job) = JOB.get() {
+        let Some(mut next) = lock_until(&job.heap, began, timeout) else {
+            return false;
+        };
+        job.wake.notify_all();
+        next.take()
+    } else {
+        None
+    };
+    let joined = loop {
+        let Some(thread) = handle.as_ref() else { break true };
+        if thread.is_finished() {
+            break handle.take().expect("finished worker").join().is_ok();
+        }
+        let remaining = timeout.saturating_sub(began.elapsed());
+        if remaining.is_zero() { break false; }
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(1)));
+    };
+    drop(handle);
+    drop(abandoned);
+    joined
+}
+
+extern "C" fn at_exit() {
+    if !shutdown_for(std::time::Duration::from_secs(5)) {
+        tracing::warn!("heap worker did not stop within five seconds");
     }
 }
 
@@ -404,6 +508,70 @@ mod tests {
         drop(tokens);
         println!("OUTSTANDING_LIMIT={OUTSTANDING_LISTS} CAPACITY_STOPS=1 FINAL={}", OUTSTANDING.load(Relaxed));
         assert_eq!(OUTSTANDING.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn neptune_worker_stop_request_is_visible() {
+        STOP.store(true, Relaxed);
+        assert!(stop_requested());
+        STOP.store(false, Relaxed);
+    }
+
+    #[test]
+    fn neptune_worker_shutdown_wakes_and_joins() {
+        assert!(lock(&THREAD).is_none());
+        STOP.store(false, Release);
+        JOB.get_or_init(|| Job { heap: Mutex::new(None), wake: Condvar::new() });
+        *lock(&THREAD) = Some(thread::spawn(worker));
+        assert!(shutdown_for(Duration::from_secs(1)));
+        assert!(lock(&THREAD).is_none());
+        assert!(shutdown_for(Duration::ZERO), "shutdown without a worker is idempotent");
+        STOP.store(false, Release);
+    }
+
+    #[test]
+    #[ignore = "isolated process-global worker lifecycle"]
+    fn neptune_concurrent_shutdown_never_claims_live_thread_joined() {
+        assert!(lock(&THREAD).is_none());
+        STOP.store(false, Release);
+        let (release, wait) = mpsc::channel();
+        *lock(&THREAD) = Some(thread::spawn(move || wait.recv().unwrap()));
+        let first = thread::spawn(|| shutdown_for(Duration::from_secs(2)));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !stop_requested() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(stop_requested());
+        // Wait until the old implementation temporarily removes the handle,
+        // or until the new implementation keeps it locked for the join.
+        while Instant::now() < deadline {
+            match THREAD.try_lock() {
+                Ok(g) if g.is_none() => break,
+                Err(std::sync::TryLockError::WouldBlock) => break,
+                _ => thread::yield_now(),
+            }
+        }
+        let premature = shutdown_for(Duration::ZERO);
+        release.send(()).unwrap();
+        let joined = first.join().unwrap();
+        println!("SECOND_REPORTED_JOINED={premature} FIRST_JOINED={joined}");
+        assert!(joined);
+        assert!(!premature, "second shutdown claimed a still-running worker was joined");
+        STOP.store(false, Release);
+    }
+
+    #[test]
+    fn neptune_worker_shutdown_timeout_keeps_handle() {
+        assert!(lock(&THREAD).is_none());
+        STOP.store(false, Release);
+        let (release, wait) = mpsc::channel();
+        *lock(&THREAD) = Some(thread::spawn(move || wait.recv().unwrap()));
+        assert!(!shutdown_for(Duration::ZERO));
+        assert!(lock(&THREAD).is_some(), "timed-out worker was silently detached");
+        release.send(()).unwrap();
+        assert!(shutdown_for(Duration::from_secs(1)));
+        assert!(lock(&THREAD).is_none());
+        STOP.store(false, Release);
     }
 
     #[test]
