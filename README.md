@@ -46,8 +46,9 @@ NVIDIA GeForce RTX 4060 8 GB. Rust 1.100.0.
 | CLI native entry point | two raw PE32+ fixtures returned distinct expected x86-64 results; two malformed/no-entry cases rejected |
 | CLI console graphics ABI | strict IAT binding, valid memory-range witness and null E_INVALIDARG verified |
 | Thin LTO | mixed CPU measurements; 520 passed, 0 failed, 40 ignored across formats, shader and GPU suites |
-| real-game FPS / frame time / visual correctness | not verified by NEPTUNE |
-| long-session stability / VRAM peaks | not verified by NEPTUNE |
+| actual title startup | user-reported R41A run reached menu, intro and credits; world rendering incorrect |
+| real-game FPS / frame time | user-supplied R41A logs: menu near 30 FPS, lowest report 0.2 FPS, highest reported window mean 5731.8 ms; not a controlled A/B |
+| long-session stability / VRAM peaks | not established |
 
 R39C's synthetic AVX2 test measured up to 1.80x on a held-out CPU detiling
 workload. some shapes regressed. this is not game FPS. the experimental
@@ -85,6 +86,23 @@ GPU queue creation, rendering, or gameplay.
 R40A Thin LTO showed mixed CPU microbenchmark results and zero readback
 mismatches across 22 physical GPU copy fixtures. It remains experimental.
 PGO has not been tested. No FPS comparison or playable release is claimed.
+
+### local R42C experiment (not published source)
+
+a user-run R41A session exposed long waits for title memory remapping,
+dropped draws and incomplete world rendering. no gameplay pass is claimed.
+
+R42C locally tests contiguous physical alias mapping in one host view
+instead of one view per 64 KiB page. it is opt-in only. the controlled
+Windows fixture with 32 pages and 128 remaps per sample measured a median
+30.720 ms for the original path and 9.163 ms for the grouped path,
+nine paired wins out of nine. the workspace regression was 687 passed,
+0 failed and 41 ignored; an independent physical GPU copy fixture
+returned 1 MiB with zero mismatches. these results are not game FPS.
+
+the R42C implementation and executable are local candidate artifacts,
+not part of the public branch. no new derivative code is published while
+inherited source licensing remains unresolved.
 
 ## tree
 
