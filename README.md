@@ -194,6 +194,24 @@ Both local executable builds passed. No new dependency or logging worker.
 Historical session provenance, actual gameplay, world rendering and
 performance remain unverified. The source licensing boundary is unchanged.
 
+### local R49 pipeline variant selection (not published source)
+
+The 64-entry target-format variant chain previously returned the original
+pipeline on exhaustion, despite the incompatible requested format.
+A synthetic selection regression reproduces this at the 65th distinct
+format. R49 rejects that selection explicitly, records the pipeline key
+and formats in a bounded warning, and counts the diagnostic observation.
+Existing variants remain selectable. This does not expand variant capacity
+or establish that any title reached the limit.
+
+local Windows release regression: 694 passed, 0 failed, 41 ignored.
+GPU diagnostics regression: 277 passed, 0 failed, 27 ignored.
+RTX 4060 copy/readback fixture: 1 MiB, zero mismatches.
+The existing depth-bounds PSO cache and render/readback test passed in
+a separate run without a skip message. Both local executable builds passed.
+No claim of gameplay, world rendering, or performance improvement.
+Source licensing and publication boundary unchanged.
+
 ## tree
 
 | path | purpose |
