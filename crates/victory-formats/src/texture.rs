@@ -636,7 +636,7 @@ impl Layout {
         row_pitch: usize,
         depth_pitch: usize,
     ) -> Result<(), Error> {
-        self.walk::<true>(tiled, linear, mip, slice, row_pitch, depth_pitch)
+        self.walk::<true>(tiled, linear, mip, slice, row_pitch, depth_pitch, detile_avx2_enabled())
     }
 
     /// The reverse of [`Layout::detile`]: linear rows into tiled memory.
@@ -649,7 +649,7 @@ impl Layout {
         row_pitch: usize,
         depth_pitch: usize,
     ) -> Result<(), Error> {
-        self.walk::<false>(linear, tiled, mip, slice, row_pitch, depth_pitch)
+        self.walk::<false>(linear, tiled, mip, slice, row_pitch, depth_pitch, false)
     }
 
     /// Validate a detile operation without changing the destination.
@@ -724,7 +724,10 @@ impl Layout {
         slice: u32,
         row_pitch: usize,
         depth_pitch: usize,
+        avx2: bool,
     ) -> Result<(), Error> {
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = avx2;
         let (tiled_len, linear_len) = if DETILE {
             (src.len(), dst.len())
         } else {
@@ -769,6 +772,18 @@ impl Layout {
             body.iter()
                 .all(|&(offset, _, len)| len == size && offset.is_multiple_of(size))
         });
+        // Only the measured 1-byte display swizzles, with enough work to
+        // amortize the gather plan. Other modes retain the scalar path.
+        #[cfg(target_arch = "x86_64")]
+        let gather = if DETILE && avx2 && chunk_size == Some(8)
+            && n == 1 && self.desc.dimension == Dimension::Tex2d
+            && self.desc.swizzle.display() && m.tail.is_none()
+            && m.width >= 256 && m.height >= 192
+        {
+            GatherPlan::new(body)
+        } else {
+            None
+        };
         for z in 0..depth {
             let (s, inner) = self.split(first + z);
             let base = u64::from(s) * self.slice_size + m.offset;
@@ -781,6 +796,13 @@ impl Layout {
                     let tiled_row = (base + self.row(m, y, inner)) as usize;
                     match chunk_size {
                         Some(8) if tiled_row.is_multiple_of(8) => {
+                            #[cfg(target_arch = "x86_64")]
+                            if let Some(plan) = &gather {
+                                if plan.copy_row(src, dst, body, tiled_row, linear_row) {
+                                    copy_runs::<0, DETILE>(src, dst, last, tiled_row, linear_row);
+                                    continue;
+                                }
+                            }
                             copy_runs::<8, DETILE>(src, dst, body, tiled_row, linear_row)
                         }
                         Some(16) if tiled_row.is_multiple_of(16) => {
@@ -796,6 +818,80 @@ impl Layout {
             }
         }
         Ok(())
+    }
+}
+
+// Experimental and off by default until integrated runtime measurements.
+fn detile_avx2_enabled() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var_os("VICTORY_DETILE_AVX2").is_some_and(|v| v == "1"))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    { false }
+}
+
+#[cfg(target_arch = "x86_64")]
+struct GatherPlan {
+    indices: Vec<[i64; 4]>,
+    max: usize,
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+static GATHER_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(target_arch = "x86_64")]
+impl GatherPlan {
+    fn new(body: &[(usize, usize, usize)]) -> Option<Self> {
+        if !std::arch::is_x86_feature_detected!("avx2") || body.len() < 4 {
+            return None;
+        }
+        let groups = body.chunks_exact(4);
+        let mut indices = Vec::with_capacity(groups.len());
+        let mut max = 0;
+        for (i, g) in groups.enumerate() {
+            let mut offsets = [0; 4];
+            for (j, &(off, linear, len)) in g.iter().enumerate() {
+                if len != 8 || linear != (i * 4 + j) * 8 {
+                    return None;
+                }
+                offsets[j] = i64::try_from(off).ok()?;
+                max = max.max(off);
+            }
+            indices.push(offsets);
+        }
+        Some(Self { indices, max })
+    }
+
+    fn copy_row(&self, src: &[u8], dst: &mut [u8], body: &[(usize, usize, usize)], row: usize, lin: usize) -> bool {
+        let count = self.indices.len() * 4;
+        let Some(end) = row.checked_add(self.max).and_then(|x| x.checked_add(8)) else { return false };
+        if end > src.len() { return false; }
+        let Some(out_end) = lin.checked_add(count * 8) else { return false };
+        let Some(out) = dst.get_mut(lin..out_end) else { return false };
+        // SAFETY: new() checked AVX2 and all indices are nonnegative and <= max.
+        // The entire range of each gather and each output store is in bounds.
+        // Rust borrows keep the input and output disjoint.
+        unsafe { self.copy(src.as_ptr().add(row), out); }
+        #[cfg(test)]
+        GATHER_ROWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        copy_runs::<0, true>(src, dst, &body[count..], row, lin);
+        true
+    }
+
+    #[target_feature(enable = "avx2")]
+    unsafe fn copy(&self, base: *const u8, out: &mut [u8]) {
+        use std::arch::x86_64::*;
+        for (i, ix) in self.indices.iter().enumerate() {
+            // SAFETY: each index vector is 32 bytes and the caller has
+            // validated the source and destination spans.
+            unsafe {
+                let offsets = _mm256_loadu_si256(ix.as_ptr().cast());
+                let v = _mm256_i64gather_epi64::<1>(base.cast(), offsets);
+                _mm256_storeu_si256(out.as_mut_ptr().add(i * 32).cast(), v);
+            }
+        }
     }
 }
 
@@ -1492,5 +1588,83 @@ mod tests {
             Err(Error::TooSmall)
         );
         assert_eq!(l.offset(0, 64, 0, 0), Err(Error::Invalid));
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod neptune_avx2_tests {
+    use super::*;
+    use std::{hint::black_box, sync::atomic::Ordering::Relaxed, time::Instant};
+
+    #[test]
+    #[ignore = "isolated hardware AVX2 acceptance and synthetic full-path A/B"]
+    fn neptune_avx2_holdout() {
+        assert!(std::arch::is_x86_feature_detected!("avx2"));
+        let mut cases=0;
+        for sw in [2,6,10] {
+            for (w,h,loops) in [(255,193,400),(256,191,400),(256,192,400),(319,211,300),
+                (401,307,180),(768,384,80),(1537,769,20),(3072,1024,8)] {
+                let l=Layout::new(&Desc{dimension:Dimension::Tex2d,width:w,height:h,depth:1,mips:1,
+                    element_bytes:1,block:1,samples:1,swizzle:Swizzle(sw)}).unwrap();
+                let src:Vec<u8>=(0..l.size).map(|i|((i*131)^(i>>7)^(i>>16)) as u8).collect();
+                let pitch=w as usize+13;
+                let len=(h as usize-1)*pitch+w as usize;
+                let mut a=vec![0xa5;len];let mut b=a.clone();
+                let before=GATHER_ROWS.load(Relaxed);
+                l.walk::<true>(&src,&mut a,0,0,pitch,len,false).unwrap();
+                assert_eq!(GATHER_ROWS.load(Relaxed),before);
+                l.walk::<true>(&src,&mut b,0,0,pitch,len,true).unwrap();
+                let rows=GATHER_ROWS.load(Relaxed)-before;
+                let eligible=w>=256&&h>=192;
+                assert_eq!(rows,if eligible {h as usize}else{0});
+                assert_eq!(a,b);
+                let mut short=vec![0x69;len-1];
+                assert_eq!(l.walk::<true>(&src,&mut short,0,0,pitch,len,true),Err(Error::TooSmall));
+                assert!(short.iter().all(|&v|v==0x69));
+                let measure=|out:&mut[u8],mode| {
+                    let t=Instant::now();
+                    for _ in 0..loops {
+                        l.walk::<true>(black_box(&src),black_box(out),0,0,pitch,len,black_box(mode)).unwrap();
+                        black_box(&*out);
+                    }
+                    t.elapsed().as_nanos()
+                };
+                for i in 0..3 {if i%2==0 {measure(&mut a,false);measure(&mut b,true);}
+                    else {measure(&mut b,true);measure(&mut a,false);}}
+                for i in 0..9 {
+                    let (x,y)=if i%2==0{(measure(&mut a,false),measure(&mut b,true))}
+                        else{let y=measure(&mut b,true);(measure(&mut a,false),y)};
+                    println!("SAMPLE sw={sw} w={w} h={h} loops={loops} pair={i} scalar_ns={x} avx2_ns={y}");
+                }
+                assert_eq!(a,b);
+                println!("DISPATCH sw={sw} w={w} h={h} GATHER_ROWS={rows} BYTE_PARITY=true");
+                cases+=1;
+            }
+        }
+        println!("HOLDOUT_CASES={cases}");
+        assert_eq!(cases,24);
+    }
+
+    #[test]
+    fn neptune_avx2_bounds() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            assert!(GatherPlan::new(&[(0,0,8);4]).is_none());
+            return;
+        }
+        let body=[(8,0,8),(24,8,8),(0,16,8),(16,24,8)];
+        let plan=GatherPlan::new(&body).unwrap();
+        let src:Vec<u8>=(0..32).collect();
+        let mut dst=vec![0x69;32];
+        assert!(!plan.copy_row(&src[..31],&mut dst,&body,0,0));
+        assert!(dst.iter().all(|&v|v==0x69));
+        assert!(!plan.copy_row(&src,&mut dst[..31],&body,0,0));
+        assert!(dst.iter().all(|&v|v==0x69));
+        assert!(!plan.copy_row(&src,&mut dst,&body,usize::MAX,0));
+        assert!(dst.iter().all(|&v|v==0x69));
+        assert!(plan.copy_row(&src,&mut dst,&body,0,0));
+        let mut expected=vec![0x69;32];
+        copy_runs::<8,true>(&src,&mut expected,&body,0,0);
+        assert_eq!(dst,expected);
+        assert!(GatherPlan::new(&[(0,0,8),(8,8,8),(16,16,8),(24,23,8)]).is_none());
     }
 }
