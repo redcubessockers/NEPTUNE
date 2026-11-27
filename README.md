@@ -104,6 +104,31 @@ the R42C implementation and executable are local candidate artifacts,
 not part of the public branch. no new derivative code is published while
 inherited source licensing remains unresolved.
 
+### local R43 diagnostics checkpoint (not published source)
+
+the legacy user directory contained 794 files but no persistent gameplay
+trace. the existing tracing subscriber sent events only to stderr.
+R43 adds a bounded per-process diagnostic log alongside stderr, with UTC
+and monotonic timestamps, session and process identity, Rust thread IDs,
+severity and subsystem. the default log directory is
+`%LOCALAPPDATA%\NEPTUNE\logs`; `NEPTUNE_LOG_DIR` overrides it.
+`NEPTUNE_LOG` takes precedence over the legacy `VICTORY_LOG`.
+cache and persistent title data stay in their existing locations.
+
+local verification: 689 workspace tests passed, 0 failed, 41 ignored.
+a physical D3D12 copy fixture read back 1 MiB with zero mismatches.
+a bind-only PE fixture produced four persistent tracing records.
+the old user directory's 794 file hashes remained unchanged.
+
+the log sink is synchronous, with a 64 MiB per-session limit and a
+loss warning. stdout is not captured by this sink. the normal-return
+footer does not establish successful title shutdown. gameplay logging
+overhead, complete frame correlation, world rendering, pipeline
+correctness and controlled gameplay FPS are still unverified.
+
+the R43 implementation remains local. no new derivative code or
+executable is published under the unresolved CC0-only licensing claim.
+
 ## tree
 
 | path | purpose |
