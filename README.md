@@ -230,6 +230,24 @@ Both local executable builds passed. Actual saturation through the title,
 worker shutdown, world rendering and gameplay remain unverified.
 Source licensing and publication boundary unchanged.
 
+### local R51/R52 diagnostic investigation (not a release)
+
+R51 native worker lifecycle fixtures observed six pipeline worker threads
+before final save and zero after it. The full diagnostics regression still
+aborted with access violation 0xc0000005. R50 remains the accepted local
+checkpoint.
+
+R52 reproduced a guard defect using the installed Windows RPC runtime's
+chained x64 unwind metadata. A program counter on the second byte of a
+multi-byte POP instruction is interpreted as POP RSP; the existing guard
+accepted that partial epilogue at the end of a runtime-function range.
+A conservative isolated candidate refused it. The same candidate also
+refused a valid instruction boundary whose epilogue crosses that range.
+Six standalone guard tests and one native metadata-lookup fixture passed.
+No unsafe OS unwind was attempted by those fixtures. Full integration,
+diagnostics regression, profile coverage and crash elimination are not
+verified. No new gameplay or FPS result.
+
 ## tree
 
 | path | purpose |
