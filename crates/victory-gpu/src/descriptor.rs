@@ -1530,6 +1530,7 @@ mod tests {
         let stats = || [2,3,4].map(|i| crate::heap_worker::STATS[i].load(Relaxed));
         let before = stats();
         crate::heap_worker::stage_fixture(heap, ahead, &[(0,a,ka),(1,b,kb)]);
+        assert_eq!(crate::heap_worker::outstanding_count(), 1);
         assert!(!host_heap.made(0));
         assert!(!host_heap.made(1));
         let mut changed = sampler;
@@ -1540,6 +1541,7 @@ mod tests {
         let in_flight = crate::host::submissions_in_flight();
         let published_early = host_heap.made(0);
         crate::host::settle_for_fence();
+        assert_eq!(crate::heap_worker::outstanding_count(), 0);
         let after = stats();
         let delta = std::array::from_fn::<_,3,_>(|i| after[i]-before[i]);
         let live = host_heap.made(0);
@@ -1579,8 +1581,10 @@ mod tests {
         let key = u64::from(generation) << 32 | u64::from(i);
         let ahead = device.new_list().unwrap();
         crate::heap_worker::stage_fixture(heap, ahead, &[(0,a,key)]);
+        assert_eq!(crate::heap_worker::outstanding_count(), 1);
         assert!(!host_heap.made(0));
         let (early, final_made) = crate::host::submit_tests::two_flight_fixture(|| host_heap.made(0));
+        assert_eq!(crate::heap_worker::outstanding_count(), 0);
         assert_eq!(object::release_boxed::<Heap>(h),0);
         assert!(!early, "published descriptor while a later physical flight remained blocked");
         assert!(final_made, "publication lost after both flights completed");
