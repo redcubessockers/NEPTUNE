@@ -12,16 +12,18 @@ GPU commands and shader programs require translation.
 
 ## machine path
 
-```text
- PE32+ image
-     |
- native x86-64 execution
-     |
- platform ABI / runtime services
-     |
- D3D12.X -> host D3D12 -> physical GPU
-     |
- GPU ISA -> SSA -> DXIL -> driver
+The native CPU and shader translation paths converge at the host graphics API.
+
+```mermaid
+flowchart TD
+    PE["PE32+ title image"] --> CPU["Native x86-64 execution"]
+    CPU --> ABI["Platform ABI and runtime services"]
+    ABI --> CMD["D3D12.X command translation"]
+    ISA["Console GPU shader ISA"] --> IR["IR and control-flow recovery"]
+    IR --> DXIL["DXIL generation"]
+    CMD --> HOST["Host D3D12 and driver"]
+    DXIL --> HOST
+    HOST --> GPU["Physical GPU"]
 ```
 
 this is not a source-level port of the original game. it is a compatibility
@@ -31,7 +33,7 @@ correct rendering, security, or gameplay.
 
 ## current evidence
 
-checkpoint: R39F, 2026-11-27. Windows 11 x64, Intel Core i5-12400F,
+checkpoint: R41B, 2026-11-28. Executable evidence uses the R39F source baseline; R40A compares build profiles without changing release defaults. Windows 11 x64, Intel Core i5-12400F,
 NVIDIA GeForce RTX 4060 8 GB. Rust 1.100.0.
 
 | boundary | evidence |
@@ -41,6 +43,9 @@ NVIDIA GeForce RTX 4060 8 GB. Rust 1.100.0.
 | physical D3D12 two-flight publication | fence ordering verified on the test GPU |
 | command-list retirement | fresh physical fixtures checked readback and completion |
 | experimental AVX2 detiling | 24 held-out shapes matched scalar bytes; not default |
+| CLI native entry point | two raw PE32+ fixtures returned distinct expected x86-64 results; two malformed/no-entry cases rejected |
+| CLI console graphics ABI | strict IAT binding, valid memory-range witness and null E_INVALIDARG verified |
+| Thin LTO | mixed CPU measurements; 520 passed, 0 failed, 40 ignored across formats, shader and GPU suites |
 | real-game FPS / frame time / visual correctness | not verified by NEPTUNE |
 | long-session stability / VRAM peaks | not verified by NEPTUNE |
 
@@ -62,6 +67,24 @@ five physical GPU fixtures. Shutdown does not cover forced process
 termination, and the wait budget does not bound arbitrary destructors.
 Worker starvation and full title-level lifecycle are still open.
 These are scoped tests, not an end-to-end gameplay or FPS result.
+
+### native entry witnesses
+
+R41A ran two hand-built PE32+ programs via the optimized runtime's actual
+CLI and native entry point. The only code difference was one immediate byte.
+The returned values were 23317927 and 23317926, respectively. A bind-only
+run did not execute the entry point; a missing entry point and an invalid PE
+signature were rejected.
+
+R41B ran hand-built PE32+ import fixtures in strict mode, calling the
+console graphics virtual-memory interface through the IAT. A valid
+configuration returned a nonzero ordered address range; a null argument
+returned HRESULT 0x80070057. This establishes the tested ABI path, not
+GPU queue creation, rendering, or gameplay.
+
+R40A Thin LTO showed mixed CPU microbenchmark results and zero readback
+mismatches across 22 physical GPU copy fixtures. It remains experimental.
+PGO has not been tested. No FPS comparison or playable release is claimed.
 
 ## tree
 
@@ -144,8 +167,11 @@ The [inherited README at R39C](https://github.com/redcubessockers/NEPTUNE/blob/7
 preserves the full credits, historical measurements and upstream notes.
 Those measurements are not NEPTUNE results.
 
-Source: GPL-3.0-or-later. See [LICENSE](LICENSE). Third-party components
-retain their own licenses. This repository is intended for source and
+The repository's [LICENSE](LICENSE) label is CC0-1.0. The inherited
+VIctory source and Cargo metadata still identify GPL-3.0-or-later.
+The label alone does not establish permission to relicense inherited
+code. CC0-only distribution of the full source is not established.
+Third-party components retain their own licenses. This repository is intended for source and
 synthetic tests, not distribution of game files or derived game assets.
 See [asset policy](docs/asset-policy.md), including its inherited BCPack
 table exception (not covered by the project license). An allowlist pass
