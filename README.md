@@ -165,6 +165,20 @@ failure remains unresolved and is not attributed to the new collector.
 no gameplay A/B, world-rendering parity or full CC0-only relicensing
 claim. no new derivative source or executable distributed.
 
+### local R46 native x64 unwind bounds (not published source)
+
+a deterministic fixture exposed a saved-RBX read outside a 512-byte stack
+copy: the previous guard accepted offset 512, width 8. R46 checks near
+and far GPR/XMM save offsets, multi-slot operand lengths, and conservative
+stack bounds before the OS unwinder. Eight focused cases passed.
+
+local Windows release regression: 691 passed, 0 failed, 41 ignored.
+GPU diagnostics regression: 276 passed, 0 failed, 27 ignored. Separate
+profiler stress: 60,000 walks, 291,307 frames. Physical RTX 4060 copy
+fixture: 1 MiB, zero mismatches. The earlier access violation is not
+conclusively attributed to this defect; full stack-walk safety and
+gameplay remain unverified. No performance improvement is claimed.
+
 ## tree
 
 | path | purpose |
