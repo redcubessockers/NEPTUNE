@@ -129,6 +129,24 @@ correctness and controlled gameplay FPS are still unverified.
 the R43 implementation remains local. no new derivative code or
 executable is published under the unresolved CC0-only licensing claim.
 
+### local R44 pipeline boundary verification (not published source)
+
+the stream parser previously accepted a zero-length description and did
+not check the full size of known subobjects before reading their payload.
+R44 locally validates the known prefix before decoding it. malformed
+known extents return E_INVALIDARG. unknown subobject compatibility
+behavior remains unchanged and is explicitly logged.
+
+the focused regression covers 440 truncated lengths across four
+subobject kinds and seven incomplete trailing headers, plus existing
+valid-stream tests. GPU crate regression: 254 passed, 0 failed, 28 ignored.
+a separate physical D3D12 fixture copied 1 MiB with zero mismatches.
+these tests do not establish title pipeline creation or rendering parity.
+
+the NVIDIA fork is a separate reference, not the NEPTUNE runtime.
+frame generation throughput must not be reported as native FPS.
+no new derivative source or executable has been published.
+
 ## tree
 
 | path | purpose |
