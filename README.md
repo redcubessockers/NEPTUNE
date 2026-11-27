@@ -31,15 +31,15 @@ correct rendering, security, or gameplay.
 
 ## current evidence
 
-checkpoint: R39C, 2026-11-27. Windows 11 x64, Intel Core i5-12400F,
+checkpoint: R39E, 2026-11-27. Windows 11 x64, Intel Core i5-12400F,
 NVIDIA GeForce RTX 4060 8 GB. Rust 1.100.0.
 
 | boundary | evidence |
 | --- | --- |
-| workspace regression | 681 passed, 0 failed, 38 ignored (recovered log) |
-| source asset-policy check | 228 files passed at R39C |
+| workspace regression | 683 passed, 0 failed, 39 ignored (exit 0) |
+| source asset-policy check | 228 files passed in integrated regression |
 | physical D3D12 two-flight publication | fence ordering verified on the test GPU |
-| command-list retirement | earlier physical fixtures checked readback and completion |
+| command-list retirement | fresh physical fixtures checked readback and completion |
 | experimental AVX2 detiling | 24 held-out shapes matched scalar bytes; not default |
 | real-game FPS / frame time / visual correctness | not verified by NEPTUNE |
 | long-session stability / VRAM peaks | not verified by NEPTUNE |
@@ -49,10 +49,13 @@ workload. some shapes regressed. this is not game FPS. the experimental
 path stays disabled unless `VICTORY_DETILE_AVX2=1` is explicitly set.
 unsupported CPU features and other layouts use the scalar path.
 
-The separate R38D candidate added a four-list admission bound to asynchronous
-texture preparation. It has its own regression and physical fixture evidence;
-the bound is a count of lists, not an exact memory limit. Integration into
-this branch requires fresh tests.
+R38D's four-list admission bound is integrated. the bound is a count of
+lists, not an exact memory limit; worker shutdown and starvation proof are
+still open. R39E fixes duplicate event ticks under concurrent waits. the
+RED test observed four successful waits sharing tick 1; the corrected
+implementation delivered four distinct ticks. eight further concurrent
+rounds passed, together with seven GPU/worker fixture executions.
+These are scoped tests, not an end-to-end gameplay or FPS result.
 
 ## tree
 

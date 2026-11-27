@@ -35,6 +35,9 @@ struct Clock {
 static CLOCK: Mutex<Option<Clock>> = Mutex::new(None);
 static FRAME: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+std::thread_local! { static TEST_COMPLETED_TICK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+
 fn clock() -> std::sync::MutexGuard<'static, Option<Clock>> {
     CLOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -104,13 +107,18 @@ fn next_tick(kind: u32) -> (u64, Duration) {
     });
     let elapsed = c.start.elapsed().as_nanos();
     let interval = c.interval.as_nanos().max(1);
-    let tick =
-        (c.first + (elapsed / interval + 1) as u64).max(last(kind).load(Ordering::Relaxed) + 1);
+    let tick = scheduled_tick(c.first, elapsed, interval, last(kind).load(Ordering::Relaxed));
     let at = u128::from(tick - c.first) * interval;
     (
         tick,
         Duration::from_nanos(at.saturating_sub(elapsed) as u64),
     )
+}
+
+// Absolute tick scheduling: elapsed intervals may be skipped, but a
+// previously completed event cannot be handed out again.
+fn scheduled_tick(first: u64, elapsed: u128, interval: u128, completed: u64) -> u64 {
+    (first + (elapsed / interval + 1) as u64).max(completed + 1)
 }
 
 /// Device method: blocks until the next tick (or the time-out); an origin
@@ -126,33 +134,47 @@ pub(crate) extern "system" fn wait(
     token: *mut u64,
 ) -> HRESULT {
     let origin = kind == ORIGIN;
-    let (mut tick, mut wait) = next_tick(kind);
     let limit = Duration::from_millis(u64::from(timeout_ms));
-    // A blocking wait for an event that has happened since the last wait
-    // for it ended (a frame took longer than a tick) ends at once, on the
-    // tick that passed: sleeping on to the next one cost 17 ms of every
-    // 730 ms frame (run 58: "2.0 frame waits sleeping 16.8 ms"). Polls (a
-    // time-out shorter than a tick) answer as before.
-    // `VICTORY_LATE_WAITS=1` sleeps to the next tick, as before.
+    let started = Instant::now();
+    let mut slept = Duration::ZERO;
+    // A blocking wait for an event that has already happened may take
+    // the most recent elapsed tick. Short polls still answer as before.
     static SLEEP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*SLEEP.get_or_init(|| std::env::var_os("VICTORY_LATE_WAITS").is_some_and(|v| v == "1"))
-        && limit >= wait
-        && tick > last(kind).load(Ordering::Relaxed) + 1
-    {
-        tick -= 1;
-        wait = Duration::ZERO;
-    }
-    let hr = if wait > limit {
-        std::thread::sleep(limit);
-        TIMEOUT
-    } else {
-        std::thread::sleep(wait);
-        last(kind).fetch_max(tick, Ordering::Relaxed);
-        S_OK
+    let sleep_late = *SLEEP.get_or_init(|| std::env::var_os("VICTORY_LATE_WAITS").is_some_and(|v| v == "1"));
+    let (hr, tick) = loop {
+        let (mut tick, mut delay) = next_tick(kind);
+        let remaining = limit.saturating_sub(started.elapsed());
+        if !sleep_late
+            && remaining >= delay
+            && tick > last(kind).load(Ordering::Relaxed) + 1
+        {
+            tick -= 1;
+            delay = Duration::ZERO;
+        }
+        if delay > remaining {
+            std::thread::sleep(remaining);
+            slept = slept.saturating_add(remaining);
+            break (TIMEOUT, tick);
+        }
+        std::thread::sleep(delay);
+        slept = slept.saturating_add(delay);
+        // fetch_max is a single atomic claim: exactly one waiter can
+        // observe a previous value below this tick. A loser reschedules
+        // against the same original timeout, not a fresh timeout.
+        if last(kind).fetch_max(tick, Ordering::Relaxed) < tick {
+            #[cfg(test)]
+            TEST_COMPLETED_TICK.with(|v| v.set(tick));
+            break (S_OK, tick);
+        }
+        if started.elapsed() >= limit {
+            break (TIMEOUT, tick);
+        }
     };
+    #[cfg(not(feature = "diagnostics"))]
+    let _ = tick;
     #[cfg(windows)]
     {
-        let us = wait.min(limit).as_micros() as u64;
+        let us = slept.as_micros() as u64;
         crate::framelog::add(crate::framelog::T::PaceUs, us);
         crate::framelog::here(crate::framelog::H::PaceUs, us);
     }
@@ -160,7 +182,7 @@ pub(crate) extern "system" fn wait(
     {
         use crate::copystat::{C, add};
         add(C::PaceWaits, 1);
-        add(C::PaceUs, wait.min(limit).as_micros() as u64);
+        add(C::PaceUs, slept.as_micros() as u64);
     }
     // A frame begun on a time-out takes no tick: its flip still does.
     if origin && (hr == S_OK || flags & TOKEN_ON_TIMEOUT != 0) {
@@ -178,7 +200,7 @@ pub(crate) extern "system" fn wait(
         flags,
         hr,
         tick,
-        wait_us = wait.as_micros() as u64,
+        wait_us = slept.as_micros() as u64,
         frame = current(),
         "frame wait"
     );
@@ -203,6 +225,17 @@ pub(crate) extern "system" fn statistics(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absolute_tick_schedule_handles_elapsed_gaps() {
+        let first = 10;
+        let interval = 5_000_000;
+        assert_eq!(scheduled_tick(first, 0, interval, 10), 11);
+        assert_eq!(scheduled_tick(first, interval, interval, 11), 12);
+        assert_eq!(scheduled_tick(first, interval * 2, interval, 12), 13);
+        assert_eq!(scheduled_tick(first, interval * 5 + 1, interval, 13), 16);
+        assert_eq!(scheduled_tick(first, interval, interval, 15), 16);
+    }
 
     #[test]
     fn waits_end_on_ticks_and_count_frames() {
@@ -244,9 +277,46 @@ mod tests {
                 LAST[2].load(Ordering::Relaxed)
             })
             .collect();
-        assert!(flips.windows(2).all(|w| w[1] == w[0] + 1), "{flips:?}");
+        // Real wall time can advance by several ticks while this thread
+        // is descheduled. The contract is unique increasing ticks, not
+        // consecutive ticks under arbitrary scheduler delays. Exact
+        // consecutive scheduling is checked without wall time below.
+        assert!(flips.windows(2).all(|w| w[1] > w[0]), "{flips:?}");
         // Even when a flip wait begins on the tick another just ended on.
         let (tick, _) = next_tick(FLIP);
         assert!(tick > flips[3]);
+    }
+}
+
+#[cfg(test)]
+mod neptune_pacing_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    #[ignore = "isolated global clock and concurrent event wait witness"]
+    fn neptune_concurrent_flip_ticks() {
+        const N: usize = 4;
+        let null = std::ptr::null();
+        assert_eq!(set_interval(null, null, 200_000, 1, 0), S_OK);
+        let gate = Arc::new(Barrier::new(N + 1));
+        let mut threads = Vec::new();
+        for _ in 0..N {
+            let gate = gate.clone();
+            threads.push(std::thread::spawn(move || {
+                gate.wait();
+                let null = std::ptr::null();
+                let hr = wait(null, 2, 3_000, std::ptr::null(), 0, std::ptr::null_mut());
+                (hr, TEST_COMPLETED_TICK.with(|v| v.get()))
+            }));
+        }
+        gate.wait();
+        let rows: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        println!("COMPLETED={rows:?}");
+        assert!(rows.iter().all(|&(hr,tick)| hr == S_OK && tick > 0));
+        let mut ticks: Vec<_> = rows.iter().map(|&(_,t)| t).collect();
+        ticks.sort_unstable();
+        ticks.dedup();
+        assert_eq!(ticks.len(), N, "two waits completed the same flip tick");
     }
 }

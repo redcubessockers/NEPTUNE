@@ -53,6 +53,36 @@ pub(crate) static STATS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 /// milliseconds of work, so that its textures show soon.
 const LIST_BYTES: u64 = 48 << 20;
 const LIST_MS: u128 = 40;
+const OUTSTANDING_LISTS: usize = 4;
+
+fn outstanding_full(count: usize) -> bool {
+    count >= OUTSTANDING_LISTS
+}
+
+static OUTSTANDING: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static CAPACITY_STOPS: AtomicU64 = AtomicU64::new(0);
+
+/// One list admitted to READY or waiting for descriptor publication. The
+/// token follows the list's publication metadata and releases its place on
+/// every drop path.
+struct Outstanding;
+
+impl Outstanding {
+    fn new() -> Option<Self> {
+        OUTSTANDING
+            .try_update(Relaxed, Relaxed, |count| (!outstanding_full(count)).then_some(count + 1))
+            .map(|_| Outstanding)
+            .map_err(|_| CAPACITY_STOPS.fetch_add(1, Relaxed))
+            .ok()
+    }
+}
+
+impl Drop for Outstanding {
+    fn drop(&mut self) {
+        let before = OUTSTANDING.fetch_sub(1, Relaxed);
+        debug_assert!(before > 0);
+    }
+}
 
 /// A view to give a host slot once its texture's upload is in the queue:
 /// the title's heap, the slot, the record's handle, and the record's key as
@@ -92,6 +122,7 @@ struct Ready {
     list: HostList,
     publish: Vec<Publish>,
     _heap: HeldHeap,
+    _outstanding: Outstanding,
 }
 // SAFETY: D3D12 objects are free-threaded; the list is closed and touched
 // by nobody until it is taken out.
@@ -105,6 +136,7 @@ static READY: Mutex<Vec<Ready>> = Mutex::new(Vec::new());
 pub(crate) struct ReadyPublish {
     publish: Vec<Publish>,
     _heap: HeldHeap,
+    _outstanding: Outstanding,
 }
 
 /// Publication batches waiting for a completed submission number.
@@ -120,6 +152,7 @@ pub(crate) struct Batch {
     heap: This,
     list: Option<HostList>,
     publish: Vec<Publish>,
+    outstanding: Option<Outstanding>,
     bytes: u64,
     began: std::time::Instant,
 }
@@ -130,6 +163,7 @@ impl Batch {
             heap: std::ptr::from_ref(heap).cast(),
             list: None,
             publish: Vec::new(),
+            outstanding: None,
             bytes: 0,
             began: std::time::Instant::now(),
         }
@@ -138,7 +172,15 @@ impl Batch {
     /// The open upload list.
     pub(crate) fn list(&mut self) -> Option<&HostList> {
         if self.list.is_none() {
+            self.outstanding = Outstanding::new();
+            if self.outstanding.is_none() {
+                return None;
+            }
             self.list = crate::list::fresh_list();
+            if self.list.is_none() {
+                self.outstanding = None;
+                return None;
+            }
             self.began = std::time::Instant::now();
         }
         self.list.as_ref()
@@ -167,13 +209,14 @@ impl Batch {
         let Some(list) = self.list.take() else {
             return;
         };
+        let outstanding = self.outstanding.take().expect("an open worker list has an outstanding token");
         let started = std::time::Instant::now();
         let left = list.refresh_textures_ahead();
         STATS[1].fetch_add(started.elapsed().as_nanos() as u64, Relaxed);
         STATS[5].fetch_add(left, Relaxed);
         list.close();
         let heap = HeldHeap::new(crate::descriptor::heap(self.heap));
-        lock(&READY).push(Ready { list, publish, _heap: heap });
+        lock(&READY).push(Ready { list, publish, _heap: heap, _outstanding: outstanding });
     }
 }
 
@@ -198,7 +241,11 @@ pub(crate) fn take_ready() -> (Vec<HostList>, Vec<ReadyPublish>) {
     let mut publish = Vec::with_capacity(ready.len());
     for r in ready {
         lists.push(r.list);
-        publish.push(ReadyPublish { publish: r.publish, _heap: r._heap });
+        publish.push(ReadyPublish {
+            publish: r.publish,
+            _heap: r._heap,
+            _outstanding: r._outstanding,
+        });
     }
     (lists, publish)
 }
@@ -340,6 +387,25 @@ fn worker() {
 mod tests {
     use super::*;
     use std::{sync::mpsc, thread, time::{Duration, Instant}};
+
+    #[test]
+    fn neptune_outstanding_capacity_boundary() {
+        assert_eq!(OUTSTANDING.load(Relaxed), 0);
+        assert!(!outstanding_full(OUTSTANDING_LISTS - 1));
+        assert!(outstanding_full(OUTSTANDING_LISTS));
+        assert!(outstanding_full(OUTSTANDING_LISTS + 1));
+        let before = CAPACITY_STOPS.load(Relaxed);
+        let mut tokens: Vec<Outstanding> = (0..OUTSTANDING_LISTS).map(|_| Outstanding::new().unwrap()).collect();
+        assert_eq!(OUTSTANDING.load(Relaxed), OUTSTANDING_LISTS);
+        assert!(Outstanding::new().is_none());
+        assert_eq!(CAPACITY_STOPS.load(Relaxed), before + 1);
+        drop(tokens.pop());
+        tokens.push(Outstanding::new().expect("a released place is reusable"));
+        drop(tokens);
+        println!("OUTSTANDING_LIMIT={OUTSTANDING_LISTS} CAPACITY_STOPS=1 FINAL={}", OUTSTANDING.load(Relaxed));
+        assert_eq!(OUTSTANDING.load(Relaxed), 0);
+    }
+
     #[test]
     #[ignore = "isolated global worker state"]
     fn neptune_two_urgent_waiters_preserve_request() {
@@ -440,15 +506,23 @@ mod tests {
 }
 
 #[cfg(test)]
+pub(crate) fn outstanding_count() -> usize {
+    OUTSTANDING.load(Relaxed)
+}
+
+#[cfg(test)]
 pub(crate) fn stage_fixture(heap: &Heap, list: HostList, entries: &[(u32, u64, u64)]) {
     assert!(JOB.get().is_none(), "isolated test must not start worker");
     JOB.get_or_init(|| Job { heap: Mutex::new(None), wake: Condvar::new() });
     assert!(lock(&READY).is_empty());
     let mut batch = Batch::new(heap);
+    batch.outstanding = Outstanding::new();
+    assert!(batch.outstanding.is_some());
     batch.list = Some(list);
     for &(index, handle, key) in entries {
         batch.publish(index, handle, key);
     }
     drop(batch); // production flush, close and enqueue
     assert_eq!(lock(&READY).len(), 1);
+    assert_eq!(outstanding_count(), 1);
 }
