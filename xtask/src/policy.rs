@@ -315,6 +315,18 @@ mod tests {
             "docs/assets/neptune-logo.svg",
             b"<svg><image href=\"https://example.com/a\"/></svg>\n"
         ).is_empty());
+        assert!(!check(
+            "docs/assets/neptune-logo.svg",
+            b"<svg width=\"12\"><path style=\"fill:red\"/></svg>\n"
+        ).is_empty());
+        assert!(!check(
+            "docs/assets/neptune-logo.svg",
+            b"<svg width=\"12\"><path onerror=\"alert(1)\"/></svg>\n"
+        ).is_empty());
+        assert!(!check(
+            "docs/assets/neptune-logo.svg",
+            b"<svg width=\"12\"><path src=\"https://example.com/p\"/></svg>\n"
+        ).is_empty());
         let hidden_data = format!("<svg>{}</svg>\n", "A1".repeat(400));
         assert!(!check("docs/assets/neptune-logo.svg", hidden_data.as_bytes()).is_empty());
     }
