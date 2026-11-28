@@ -178,9 +178,7 @@ impl Batch {
     pub(crate) fn list(&mut self) -> Option<&HostList> {
         if self.list.is_none() {
             self.outstanding = Outstanding::new();
-            if self.outstanding.is_none() {
-                return None;
-            }
+            self.outstanding.as_ref()?;
             self.list = crate::list::fresh_list();
             if self.list.is_none() {
                 self.outstanding = None;
@@ -494,6 +492,28 @@ extern "C" fn at_exit() {
 }
 
 #[cfg(test)]
+pub(crate) fn outstanding_count() -> usize {
+    OUTSTANDING.load(Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn stage_fixture(heap: &Heap, list: HostList, entries: &[(u32, u64, u64)]) {
+    assert!(JOB.get().is_none(), "isolated test must not start worker");
+    JOB.get_or_init(|| Job { heap: Mutex::new(None), wake: Condvar::new() });
+    assert!(lock(&READY).is_empty());
+    let mut batch = Batch::new(heap);
+    batch.outstanding = Outstanding::new();
+    assert!(batch.outstanding.is_some());
+    batch.list = Some(list);
+    for &(index, handle, key) in entries {
+        batch.publish(index, handle, key);
+    }
+    drop(batch); // production flush, close and enqueue
+    assert_eq!(lock(&READY).len(), 1);
+    assert_eq!(outstanding_count(), 1);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{sync::mpsc, thread, time::{Duration, Instant}};
@@ -690,26 +710,4 @@ mod tests {
         println!("WAITER_BOUNDARIES=1,2,8,16 ROUNDS=32 HANDOFFS={handoffs} FINAL_PENDING={}", URGENT.load(Acquire));
         assert_eq!(handoffs, 216);
     }
-}
-
-#[cfg(test)]
-pub(crate) fn outstanding_count() -> usize {
-    OUTSTANDING.load(Relaxed)
-}
-
-#[cfg(test)]
-pub(crate) fn stage_fixture(heap: &Heap, list: HostList, entries: &[(u32, u64, u64)]) {
-    assert!(JOB.get().is_none(), "isolated test must not start worker");
-    JOB.get_or_init(|| Job { heap: Mutex::new(None), wake: Condvar::new() });
-    assert!(lock(&READY).is_empty());
-    let mut batch = Batch::new(heap);
-    batch.outstanding = Outstanding::new();
-    assert!(batch.outstanding.is_some());
-    batch.list = Some(list);
-    for &(index, handle, key) in entries {
-        batch.publish(index, handle, key);
-    }
-    drop(batch); // production flush, close and enqueue
-    assert_eq!(lock(&READY).len(), 1);
-    assert_eq!(outstanding_count(), 1);
 }
