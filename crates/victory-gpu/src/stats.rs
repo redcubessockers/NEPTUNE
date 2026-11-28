@@ -248,6 +248,7 @@ fn busiest_filtered(
     (top as f32, by_kind)
 }
 
+#[cfg(test)]
 fn busiest(engines: &[Engine], pid: Option<u32>) -> (f32, HashMap<&str, f64>) {
     busiest_filtered(engines, pid, None)
 }
