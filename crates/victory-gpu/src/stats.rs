@@ -34,7 +34,7 @@ pub(crate) struct Stats {
     /// This process's busiest thread, in per cent of one processor.
     pub(crate) top_thread: f32,
     /// The card's busiest engine, per cent, all processes; none if the
-    /// system's counters did not answer.
+    /// host adapter has no usable counter sample.
     pub(crate) gpu_all: Option<f32>,
     /// The same for this process alone.
     pub(crate) gpu_ours: Option<f32>,
@@ -328,6 +328,20 @@ impl Engines {
     }
 }
 
+/// Convert a PDH snapshot into the two displayed adapter load figures.
+fn adapter_loads(
+    looked: Option<&[Engine]>, pid: u32, adapter: AdapterLuid,
+) -> (Option<f32>, Option<f32>) {
+    let Some(e) = looked else { return (None, None) };
+    let (all, kinds) = busiest_on_adapter(e, None, adapter);
+    // An empty engine map is not a measured zero. This also covers
+    // adapters without PDH counters and snapshots containing only invalid values.
+    if kinds.is_empty() {
+        return (None, None);
+    }
+    (Some(all), Some(busiest_on_adapter(e, Some(pid), adapter).0))
+}
+
 /// The thread: a look a second, for as long as the process runs.
 fn run(adapter: AdapterLuid) {
     let mut engines = Engines::open();
@@ -363,13 +377,7 @@ fn run(adapter: AdapterLuid) {
             / wall
             * 100.0;
         let looked = engines.as_mut().and_then(Engines::look);
-        let (gpu_all, gpu_ours) = match &looked {
-            Some(e) => (
-                Some(busiest_on_adapter(e, None, adapter).0),
-                Some(busiest_on_adapter(e, Some(pid), adapter).0),
-            ),
-            None => (None, None),
-        };
+        let (gpu_all, gpu_ours) = adapter_loads(looked.as_deref(), pid, adapter);
         let (ram_ours_mb, ram_free_mb) = memory();
         let stats = Stats {
             cpu_all: cpu_all.clamp(0.0, 100.0) as f32,
@@ -386,6 +394,9 @@ fn run(adapter: AdapterLuid) {
         // box has room for one figure only.
         if looks.is_multiple_of(5) {
             let kinds = |pid: Option<u32>| {
+                if gpu_all.is_none() {
+                    return "not known".to_owned();
+                }
                 let Some(e) = &looked else { return "not known".to_owned() };
                 let mut kinds: Vec<(&str, f64)> =
                     busiest_on_adapter(e, pid, adapter).1.into_iter().filter(|(_, p)| *p >= 0.5).collect();
@@ -460,6 +471,40 @@ mod tests {
         assert_eq!(parse_instance("pid_8_luid_0x0_0x1_phys_0_eng_5_engtype_Compute_0"), Some((8, second, "Compute_0")));
         assert_eq!(parse_instance("_Total"), None);
         assert_eq!(parse_instance("pid_x_engtype_3D"), None);
+    }
+
+    #[test]
+    fn absent_adapter_is_unknown_not_idle() {
+        let selected = AdapterLuid { high: 0, low: 1 };
+        let other = Engine {
+            pid: 7, key: EngineKey { luid_high: 0, luid_low: 2, phys: 0, engine: 0 },
+            kind: "3D".into(), percent: 99.0,
+        };
+        assert_eq!(adapter_loads(Some(&[other]), 7, selected), (None, None));
+    }
+
+    #[test]
+    fn unusable_adapter_samples_are_unknown() {
+        let selected = AdapterLuid { high: 0, low: 1 };
+        let e = |percent| Engine {
+            pid: 7, key: EngineKey { luid_high: 0, luid_low: 1, phys: 0, engine: 0 },
+            kind: "3D".into(), percent,
+        };
+        assert_eq!(adapter_loads(Some(&[]), 7, selected), (None, None));
+        assert_eq!(adapter_loads(Some(&[e(f64::NAN), e(f64::INFINITY), e(-1.0)]), 7, selected), (None, None));
+    }
+
+    #[test]
+    fn observed_idle_and_absent_process_remain_zero() {
+        let selected = AdapterLuid { high: 0, low: 1 };
+        let e = |percent| Engine {
+            pid: 7, key: EngineKey { luid_high: 0, luid_low: 1, phys: 0, engine: 0 },
+            kind: "3D".into(), percent,
+        };
+        assert_eq!(adapter_loads(None, 7, selected), (None, None));
+        assert_eq!(adapter_loads(Some(&[e(0.0)]), 7, selected), (Some(0.0), Some(0.0)));
+        assert_eq!(adapter_loads(Some(&[e(31.0)]), 8, selected), (Some(31.0), Some(0.0)));
+        assert_eq!(adapter_loads(Some(&[e(31.0)]), 7, selected), (Some(31.0), Some(31.0)));
     }
 
     #[test]
@@ -569,6 +614,7 @@ mod tests {
         let (global, _) = busiest(&samples, None);
         let (host, by_type) = busiest_on_adapter(&samples, None, selected);
         assert!(host.is_finite() && (0.0..=100.0).contains(&host));
+        assert_eq!(adapter_loads(Some(&samples), std::process::id(), selected).0, Some(host));
         assert!(host <= global + f32::EPSILON, "host-adapter load cannot exceed the global busiest engine");
         println!(
             "R72_DXGI_PDH_LUID={:#010x}:{:#010x} PDH_INSTANCES={} SELECTED_INSTANCES={} ADAPTER_LUIDS={} PHYSICAL_ENGINES={} GLOBAL_BUSY={} HOST_BUSY={} HOST_ENGINE_TYPES={}",
