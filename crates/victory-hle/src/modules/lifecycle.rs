@@ -465,6 +465,83 @@ mod tests {
 
     extern "system" fn noop(_: u8, _: *mut c_void) {}
 
+    // R67: a title may subclass its ANSI HWND during WM_CREATE before
+    // our CreateWindowExA import wrapper has returned. The class hook then
+    // stops being the instance WndProc, so the import hook must detect it.
+    static R67_SUBCLASS_SET: AtomicBool = AtomicBool::new(false);
+
+    extern "system" fn r67_instance_proc(
+        hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM,
+    ) -> LRESULT {
+        if message == wm::WM_SYSCOMMAND {
+            COMMANDS.with(|c| c.borrow_mut().push(wparam & 0xFFF0));
+            return 0;
+        }
+        unsafe { wm::DefWindowProcA(hwnd, message, wparam, lparam) }
+    }
+
+    extern "system" fn r67_class_proc(
+        hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM,
+    ) -> LRESULT {
+        if message == wm::WM_CREATE {
+            // SAFETY: HWND is being created on this test thread. A missing
+            // subclass is recorded for an assertion *outside* the callback.
+            let previous = unsafe {
+                wm::SetWindowLongPtrW(
+                    hwnd, wm::GWLP_WNDPROC, r67_instance_proc as *const () as isize,
+                )
+            };
+            R67_SUBCLASS_SET.store(previous != 0, Ordering::Relaxed);
+        }
+        unsafe { wm::DefWindowProcA(hwnd, message, wparam, lparam) }
+    }
+
+    #[test]
+    fn subclass_during_create_must_keep_lifecycle_interception() {
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+
+        const CLASS: &[u8] = b"neptune.r67.subclass\\0";
+        const NAME: &[u8] = b"r67\\0";
+        let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+        let class = WindowClassExA {
+            cb_size: std::mem::size_of::<WindowClassExA>() as u32,
+            style: 0,
+            wnd_proc: Some(r67_class_proc),
+            cls_extra: 0,
+            wnd_extra: 0,
+            instance,
+            icon: std::ptr::null_mut(),
+            cursor: std::ptr::null_mut(),
+            background: std::ptr::null_mut(),
+            menu_name: std::ptr::null(),
+            class_name: CLASS.as_ptr(),
+            small_icon: std::ptr::null_mut(),
+        };
+        R67_SUBCLASS_SET.store(false, Ordering::Relaxed);
+        assert_ne!(RegisterClassExA(&class), 0);
+        let hwnd = CreateWindowExA(
+            0, CLASS.as_ptr(), NAME.as_ptr(), 0, 0, 0, 10, 10,
+            std::ptr::null_mut(), std::ptr::null_mut(), instance, std::ptr::null(),
+        );
+        assert!(!hwnd.is_null(), "registered ANSI window creation failed");
+        assert!(R67_SUBCLASS_SET.load(Ordering::Relaxed),
+            "WM_CREATE did not install the title's WndProc");
+        COMMANDS.with(|c| c.borrow_mut().clear());
+        unsafe {
+            wm::SendMessageA(hwnd, wm::WM_SYSCOMMAND, wm::SC_KEYMENU as usize, 0);
+        }
+        COMMANDS.with(|c| assert!(c.borrow().is_empty(),
+            "SC_KEYMENU leaked to a title subclass after class registration"));
+        unsafe {
+            wm::SendMessageA(hwnd, wm::WM_SYSCOMMAND, wm::SC_MINIMIZE as usize, 0);
+        }
+        COMMANDS.with(|c| assert_eq!(c.borrow().as_slice(), [wm::SC_MINIMIZE as usize]));
+        unsafe {
+            wm::DestroyWindow(hwnd);
+            assert_ne!(wm::UnregisterClassA(CLASS.as_ptr(), instance), 0);
+        }
+    }
+
     #[test]
     fn registrations_come_and_go() {
         let (mut a, mut b) = (0, 0);
