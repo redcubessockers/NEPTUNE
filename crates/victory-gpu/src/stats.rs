@@ -267,10 +267,22 @@ fn counter_status_valid(status: u32) -> bool {
     matches!(status, 0 | 1)
 }
 
+// Native lifetime witness: counts only successful opens and actual close calls
+// on this test thread. No production storage or instrumentation.
+#[cfg(test)]
+std::thread_local! {
+    static PDH_LIFETIME: std::cell::Cell<(u32, u32, u32)> =
+        const { std::cell::Cell::new((0, 0, u32::MAX)) };
+}
+
 impl Engines {
     fn open() -> Option<Engines> {
+        Self::open_path("\\GPU Engine(*)\\Utilization Percentage")
+    }
+
+    fn open_path(path: &str) -> Option<Engines> {
         use windows_sys::Win32::System::Performance::{PdhAddEnglishCounterW, PdhCollectQueryData, PdhOpenQueryW};
-        let path: Vec<u16> = "\\GPU Engine(*)\\Utilization Percentage".encode_utf16().chain(std::iter::once(0)).collect();
+        let path: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
         let (mut query, mut counter) = (std::ptr::null_mut(), std::ptr::null_mut());
         // SAFETY: plain calls with a terminated string and places for the
         // two handles, kept for the life of the process.
@@ -278,6 +290,11 @@ impl Engines {
             if PdhOpenQueryW(std::ptr::null(), 0, &mut query) != 0 {
                 return None;
             }
+            #[cfg(test)]
+            PDH_LIFETIME.with(|v| {
+                let (opens, closes, status) = v.get();
+                v.set((opens + 1, closes, status));
+            });
             if PdhAddEnglishCounterW(query, path.as_ptr(), 0, &mut counter) != 0 {
                 return None;
             }
@@ -426,6 +443,30 @@ fn run(adapter: AdapterLuid) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "native Windows PDH query ownership witness"]
+    fn pdh_query_is_closed_when_counter_registration_fails() {
+        PDH_LIFETIME.with(|v| v.set((0, 0, u32::MAX)));
+        let result = Engines::open_path("\\NEPTUNE_R74_NONEXISTENT_OBJECT_20261128\\NoSuchCounter");
+        assert!(result.is_none(), "invalid counter registration must fail");
+        let observed = PDH_LIFETIME.with(|v| v.get());
+        println!("R74_PDH_FAILED_REGISTRATION opens={} closes={} close_status={:#010x}", observed.0, observed.1, observed.2);
+        assert_eq!(observed, (1, 1, 0), "failed registration must close its opened query");
+    }
+
+    #[test]
+    #[ignore = "native Windows PDH query ownership witness"]
+    fn pdh_query_is_closed_when_owner_is_dropped() {
+        PDH_LIFETIME.with(|v| v.set((0, 0, u32::MAX)));
+        let owner = Engines::open_path("\\Processor(_Total)\\% Processor Time")
+            .expect("open native processor counter");
+        assert_eq!(PDH_LIFETIME.with(|v| v.get()), (1, 0, u32::MAX));
+        drop(owner);
+        let observed = PDH_LIFETIME.with(|v| v.get());
+        println!("R74_PDH_OWNER_DROP opens={} closes={} close_status={:#010x}", observed.0, observed.1, observed.2);
+        assert_eq!(observed, (1, 1, 0), "owner drop must close its query exactly once");
+    }
 
     #[test]
     fn pdh_new_data_is_a_valid_sample() {
