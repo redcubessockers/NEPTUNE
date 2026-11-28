@@ -624,7 +624,11 @@ mod tests {
             std::ptr::null_mut(), std::ptr::null_mut(), instance,
             std::ptr::null(),
         );
-        assert!(!hwnd.is_null());
+        assert!(
+            !hwnd.is_null(),
+            "CreateWindowExA returned NULL, Win32 last_error={}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        );
         unsafe {
             let title = wm::GetPropW(hwnd, TITLE_PROC);
             assert_eq!(title, recording as *const () as *mut c_void,
