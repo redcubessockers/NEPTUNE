@@ -552,7 +552,7 @@ mod tests {
         let class = WindowClassExA {
             cb_size: size_of::<WindowClassExA>() as u32,
             style: 0,
-            wnd_proc: Some(recording),
+            wnd_proc: Some(recording_a),
             cls_extra: 0,
             wnd_extra: 0,
             instance,
@@ -605,7 +605,7 @@ mod tests {
         let class = WindowClassExA {
             cb_size: std::mem::size_of::<WindowClassExA>() as u32,
             style: 0,
-            wnd_proc: Some(recording),
+            wnd_proc: Some(recording_a),
             cls_extra: 0,
             wnd_extra: 0,
             instance,
@@ -646,7 +646,7 @@ mod tests {
         );
         unsafe {
             let title = wm::GetPropW(hwnd, TITLE_PROC);
-            assert_eq!(title, recording as *const () as *mut c_void,
+            assert_eq!(title, recording_a as *const () as *mut c_void,
                 "double subclass replaced the original WndProc with a thunk");
             COMMANDS.with(|c| c.borrow_mut().clear());
             wm::SendMessageA(hwnd, wm::WM_SYSCOMMAND, wm::SC_MINIMIZE as usize, 0);
@@ -675,6 +675,22 @@ mod tests {
         }
         // SAFETY: the system's default procedure, called as the system would.
         unsafe { wm::DefWindowProcW(hwnd, message, wparam, lparam) }
+    }
+
+    /// ANSI fixture: using DefWindowProcW for WM_NCCREATE of a class
+    /// registered with RegisterClassExA can reject native window creation.
+    /// Keep the reference procedure on the same A/W contract as the class.
+    extern "system" fn recording_a(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if message == wm::WM_SYSCOMMAND {
+            COMMANDS.with(|c| c.borrow_mut().push(wparam & 0xFFF0));
+            return 0;
+        }
+        unsafe { wm::DefWindowProcA(hwnd, message, wparam, lparam) }
     }
 
     #[test]
