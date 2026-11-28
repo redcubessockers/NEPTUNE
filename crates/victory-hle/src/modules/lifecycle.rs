@@ -207,17 +207,28 @@ fn fit(parent: HWND, x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32,
 /// `width` x `height` scaled down to fit `area`, or unchanged if it fits
 /// (or is `CW_USEDEFAULT`).
 fn fit_into(area: &RECT, width: i32, height: i32) -> (i32, i32) {
-    let (aw, ah) = (area.right - area.left, area.bottom - area.top);
-    if width <= 0 || height <= 0 || aw <= 0 || ah <= 0 || (width <= aw && height <= ah) {
+    // RECT coordinates are signed 32-bit; their *span* can require 33 bits.
+    let (aw, ah) = (
+        i64::from(area.right) - i64::from(area.left),
+        i64::from(area.bottom) - i64::from(area.top),
+    );
+    if width <= 0
+        || height <= 0
+        || aw <= 0
+        || ah <= 0
+        || (i64::from(width) <= aw && i64::from(height) <= ah)
+    {
         return (width, height);
     }
+    // Both spans fit exactly in f64 (at most 2^32-1).
     let scale = f64::min(
-        f64::from(aw) / f64::from(width),
-        f64::from(ah) / f64::from(height),
+        aw as f64 / f64::from(width),
+        ah as f64 / f64::from(height),
     );
+    // A positive render target must not turn into a zero-sized Win32 HWND.
     (
-        (f64::from(width) * scale) as i32,
-        (f64::from(height) * scale) as i32,
+        (f64::from(width) * scale).max(1.0) as i32,
+        (f64::from(height) * scale).max(1.0) as i32,
     )
 }
 
@@ -566,6 +577,32 @@ mod tests {
         UnregisterAppStateChangeNotification(a);
         let left: Vec<_> = routines().iter().map(|r| r.0).collect();
         assert_eq!(left, [b]);
+    }
+
+    #[test]
+    fn monitor_coordinate_subtraction_must_not_wrap() {
+        // Virtual desktop coordinates and monitor bounds are Win32 LONGs.
+        // Their mathematical span can exceed i32::MAX.
+        let area = RECT {
+            left: i32::MIN,
+            top: 0,
+            right: i32::MAX,
+            bottom: 100,
+        };
+        // Wide desktop, but 200px image must shrink to 100px high.
+        assert_eq!(fit_into(&area, 3000, 200), (1500, 100));
+    }
+
+    #[test]
+    fn downscaling_does_not_produce_zero_sized_window() {
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 1,
+            bottom: 100,
+        };
+        // Extremely wide render target requires a nonzero Win32 height.
+        assert_eq!(fit_into(&area, i32::MAX, 1), (1, 1));
     }
 
     #[test]
