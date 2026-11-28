@@ -28,6 +28,9 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Clippy, diagnostics build
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # The panicking worker test owns process-global state. Run it alone.
+      - name: Heap worker panic join (isolated)
+        run: cargo test -p victory-gpu --locked heap_worker::tests::neptune_worker_join_failure_remains_failure -- --ignored --exact --nocapture --test-threads=1
       # Includes xtask's repository_passes_policy, the asset-policy check.
       - name: Tests
         run: cargo test --workspace --locked --exclude victory-gpu
