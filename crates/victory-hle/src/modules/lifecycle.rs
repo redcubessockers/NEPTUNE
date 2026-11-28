@@ -569,6 +569,32 @@ mod tests {
     }
 
     #[test]
+    fn monitor_coordinate_subtraction_must_not_wrap() {
+        // Virtual desktop coordinates and monitor bounds are Win32 LONGs.
+        // Their mathematical span can exceed i32::MAX.
+        let area = RECT {
+            left: i32::MIN,
+            top: 0,
+            right: i32::MAX,
+            bottom: 100,
+        };
+        // Wide desktop, but 200px image must shrink to 100px high.
+        assert_eq!(fit_into(&area, 3000, 200), (1500, 100));
+    }
+
+    #[test]
+    fn downscaling_does_not_produce_zero_sized_window() {
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 1,
+            bottom: 100,
+        };
+        // Extremely wide render target requires a nonzero Win32 height.
+        assert_eq!(fit_into(&area, i32::MAX, 1), (1, 1));
+    }
+
+    #[test]
     fn oversized_windows_shrink_to_the_screen() {
         let area = RECT {
             left: 0,
