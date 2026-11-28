@@ -73,3 +73,45 @@ document have been merged. R50 remains unchanged.
 Inherited GPU/loader code carries GPL-3.0-or-later metadata while
 the root LICENSE says CC0; rights to redistribute all inherited
 source as CC0 remain unresolved. No game data is included.
+
+R64  CRASH UNWINDER RETURN SLOT ARITHMETIC
+SOURCE COMMIT        97f32e6dd42e4ff3a1113ebb9ea61dcd7bd46e99
+SOURCE PATH          crates/victory-loader/src/crash.rs
+ROOT CAUSE           rsp + 8 wraps on usize overflow in release;
+                     read() of a misaligned *const u64 violates its precondition.
+CHANGE               stack_qword_in_bounds rejects low=0, out-of-range,
+                     unaligned and checked_add(8) overflow. No Win32/D3D12
+                     API change. First faulting RIP remains recorded.
+REGRESSION           crash::tests::invalid_stack_qword_is_rejected_before_unwind
+                     synthetic malformed CONTEXT and boundary address oracle.
+                     No invalid native pointer dereference performed.
+NATIVE ENVIRONMENT   Windows 11 x64, Rust 1.100.0, isolated public GitHub
+                     shallow clone in %TEMP%, release profile, --offline.
+NATIVE TEST          cargo test --locked --offline --release
+                       -p victory-loader --lib
+                       invalid_stack_qword_is_rejected_before_unwind
+                       -- --nocapture --test-threads=1
+NATIVE OBSERVATION   1 passed, 0 failed, 0 ignored, 27 filtered out.
+NATIVE STDOUT SHA    6ec1b9dadfd67c8a1791f611fca09a4a6ea1703e5c1b09861ed43498647e24f7
+NATIVE STDERR SHA    731122fefd6cbbd1ddd0d0b0e69eeb130a475292c43fed7eef1f665316d35762
+NATIVE RECEIPT      UNKNOWN. MCP command returned internal failure although
+                     the actual native stdout/stderr files were inspected.
+GITHUB CI           https://github.com/redcubessockers/NEPTUNE/actions/runs/46142339489
+                     1 check job SUCCESS, strict Clippy and all-features
+                     Clippy SUCCESS, 24 Rust test-result blocks aggregated:
+                     688 passed / 0 failed / 41 ignored. The new test
+                     executed on Windows (28-loader-tests block).
+ROLLBACK             Git revert the R64 source-only draft review commit;
+                     do not mutate the protected local R50 or GAME binary.
+SIDE EFFECTS         New isolated %TEMP% clone, Cargo compilation and logs.
+                     Remote source-only GitHub commit; no runtime deployment.
+BOUNDARY             This checks integer arithmetic and pointer alignment,
+                     NOT committed pages, arbitrary corrupted unwind metadata,
+                     RtlVirtualUnwind safety, full title execution or gameplay.
+R50 STATUS           No local write attempted. Fresh content hash NOT VERIFIED
+                     in this R64 step: read-only stat returned sha256=null,
+                     and a subsequent inline hash probe was blocked by
+                     CREATE_RENAME_NTSTATUS=c0000043 while staging its script.
+                     Last known pinned SHA remains
+                     fc3c8f9be91bc81140c60ed1023698fb21843947997dbd1e0471b86e3b119f0a.
+RELEASE              R52 SAFETY GATE BLOCKED. Draft only. No merge.
