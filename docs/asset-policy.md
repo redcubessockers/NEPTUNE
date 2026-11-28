@@ -34,6 +34,20 @@ by the project owner's decision (2026-11-23), entered as an exception in
 repository's licence does not cover them. Nothing else of this kind is
 accepted.
 
+## Original repository identity
+
+`docs/assets/neptune-logo.svg` is a hand-authored, self-contained text SVG
+made for this repository. It contains only vector geometry, a wordmark and
+accessibility metadata. It is not a title screenshot, shader dump, texture,
+game asset, font file or encoded binary.
+
+The static asset-policy check admits **only this exact SVG path**. All other
+`.svg` files remain disallowed. This path still passes through the existing
+size, NUL-byte, forbidden-file-signature and encoded-payload checks, plus a
+strict static-markup check that rejects script, image, external references,
+animation, CSS and embedded data. The new tests cover both valid geometry
+and malicious/incorrect inputs. This is not a new exception for game data.
+
 ## Run logs
 
 `diagnostics/` holds the layer's own logs of test and play runs, by the
