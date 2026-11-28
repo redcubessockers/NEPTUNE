@@ -243,7 +243,7 @@ fn hook(hwnd: HWND, ansi: bool) {
             .any(|entry| entry.0 == atom);
         let title = wm::GetWindowLongPtrW(hwnd, wm::GWLP_WNDPROC);
         if registered {
-            let class_proc = wm::GetClassLongPtrW(hwnd, wm::GCLP_WNDPROC);
+            let class_proc = wm::GetClassLongPtrW(hwnd, wm::GCLP_WNDPROC) as isize;
             if title != 0 && class_proc != 0 && title == class_proc {
                 return;
             }
