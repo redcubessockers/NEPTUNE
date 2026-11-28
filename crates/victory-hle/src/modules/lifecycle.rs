@@ -9,7 +9,7 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -32,6 +32,14 @@ fn routines() -> MutexGuard<'static, Vec<(usize, Routine, usize)>> {
 const SUSPEND_DEADLINE: Duration = Duration::from_secs(1);
 
 const ERROR_INVALID_PARAMETER: u32 = 87;
+
+static PROCESS_FINISH: OnceLock<fn()> = OnceLock::new();
+
+/// Installs the process-level finalizer owned by the executable layer.
+/// The first registration wins so title code cannot replace it later.
+pub fn set_process_finish(finish: fn()) -> bool {
+    PROCESS_FINISH.set(finish).is_ok()
+}
 
 pub extern "system" fn RegisterAppStateChangeNotification(
     routine: Option<Routine>,
@@ -59,6 +67,71 @@ pub extern "system" fn UnregisterAppStateChangeNotification(registration: usize)
 /// The window procedure a title window had before ours.
 const TITLE_PROC: PCWSTR = w!("victory.wndproc");
 
+/// Original procedures of ANSI classes registered through the console API.
+/// A class hook covers windows made through dynamically-resolved host calls,
+/// not only calls through our CreateWindowEx import wrapper.
+const CLASS_LIMIT: usize = 256;
+static CLASS_PROCS: Mutex<Vec<(u16, isize)>> = Mutex::new(Vec::new());
+
+/// ABI layout of Win32 WNDCLASSEXA. windows-sys gates its identical type
+/// behind the unrelated GDI feature solely because HBRUSH appears in it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WindowClassExA {
+    cb_size: u32,
+    style: u32,
+    wnd_proc: wm::WNDPROC,
+    cls_extra: i32,
+    wnd_extra: i32,
+    instance: HINSTANCE,
+    icon: *mut c_void,
+    cursor: *mut c_void,
+    background: *mut c_void,
+    menu_name: PCSTR,
+    class_name: PCSTR,
+    small_icon: *mut c_void,
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    #[link_name = "RegisterClassExA"]
+    fn host_RegisterClassExA(class: *const WindowClassExA) -> u16;
+}
+
+pub extern "system" fn RegisterClassExA(class: *const WindowClassExA) -> u16 {
+    if class.is_null() {
+        // SAFETY: preserve the host API's validation of a null argument.
+        return unsafe { host_RegisterClassExA(class) };
+    }
+    // SAFETY: the title passes a readable WNDCLASSEXA for this call.
+    let Some(original) = (unsafe { (*class).wnd_proc }) else {
+        // SAFETY: preserve the host API's validation of a missing procedure.
+        return unsafe { host_RegisterClassExA(class) };
+    };
+    let mut classes = CLASS_PROCS.lock().unwrap_or_else(|e| e.into_inner());
+    if classes.len() >= CLASS_LIMIT {
+        tracing::warn!(limit = CLASS_LIMIT, "title window-class hook limit reached");
+        // SAFETY: the title's original class description.
+        return unsafe { host_RegisterClassExA(class) };
+    }
+    // SAFETY: WNDCLASSEXA is a plain Win32 description with no Rust-owned
+    // fields. The host copies it during RegisterClassExA.
+    let mut hooked = unsafe { class.read() };
+    hooked.wnd_proc = Some(window_proc_a);
+    // SAFETY: a local class description whose pointers are the title's.
+    let atom = unsafe { host_RegisterClassExA(&hooked) };
+    if atom != 0 {
+        let original = original as *const () as isize;
+        if let Some(entry) = classes.iter_mut().find(|entry| entry.0 == atom) {
+            entry.1 = original;
+        } else {
+            classes.push((atom, original));
+        }
+        tracing::info!(atom, "title window class hooked");
+    }
+    atom
+}
+
 pub extern "system" fn CreateWindowExW(
     ex_style: u32,
     class: PCWSTR,
@@ -80,7 +153,7 @@ pub extern "system" fn CreateWindowExW(
             ex_style, class, name, style, x, y, width, height, parent, menu, instance, param,
         )
     };
-    hook(hwnd);
+    hook(hwnd, false);
     hwnd
 }
 
@@ -106,7 +179,7 @@ pub extern "system" fn CreateWindowExA(
             ex_style, class, name, style, x, y, width, height, parent, menu, instance, param,
         )
     };
-    hook(hwnd);
+    hook(hwnd, true);
     hwnd
 }
 
@@ -149,28 +222,72 @@ fn fit_into(area: &RECT, width: i32, height: i32) -> (i32, i32) {
 }
 
 /// Puts our procedure in front of the title's.
-fn hook(hwnd: HWND) {
+fn hook(hwnd: HWND, ansi: bool) {
     if hwnd.is_null() {
         return;
     }
     // SAFETY: a window this thread just created. The title's procedure is
     // stored before ours can run.
     unsafe {
+        // A class WndProc installed by RegisterClassExA intercepts messages
+        // already. GetWindowLongPtrW may return an ANSI/Unicode thunk token
+        // (0xffff....), not the Rust function address. Subclassing it again
+        // would save that token as TITLE_PROC and dispatch back into our own
+        // window_proc_a indefinitely. Keep exactly one intercept layer.
+        let atom = wm::GetClassLongPtrW(hwnd, wm::GCW_ATOM) as u16;
+        if CLASS_PROCS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|entry| entry.0 == atom)
+        {
+            return;
+        }
         let title = wm::GetWindowLongPtrW(hwnd, wm::GWLP_WNDPROC);
-        wm::SetPropW(hwnd, TITLE_PROC, title as *mut c_void);
-        wm::SetWindowLongPtrW(hwnd, wm::GWLP_WNDPROC, window_proc as *const () as isize);
+        let ours = if ansi { window_proc_a } else { window_proc_w } as *const () as isize;
+        if title == ours {
+            return;
+        }
+        if wm::SetPropW(hwnd, TITLE_PROC, title as *mut c_void) == 0 {
+            tracing::warn!(?hwnd, "could not retain the title window procedure");
+            return;
+        }
+        if wm::SetWindowLongPtrW(hwnd, wm::GWLP_WNDPROC, ours) == 0 {
+            wm::RemovePropW(hwnd, TITLE_PROC);
+            tracing::warn!(?hwnd, "could not hook the title window procedure");
+        }
     }
 }
 
-extern "system" fn window_proc(
+extern "system" fn window_proc_a(
     hwnd: HWND,
     message: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    window_proc(hwnd, message, wparam, lparam, true)
+}
+
+extern "system" fn window_proc_w(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    window_proc(hwnd, message, wparam, lparam, false)
+}
+
+fn window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    ansi: bool,
+) -> LRESULT {
     // A user close (close button, Alt+F4, window or taskbar menu); a
-    // console title never sees one, nor a WM_CLOSE from it.
-    if message == wm::WM_SYSCOMMAND && wparam & 0xFFF0 == wm::SC_CLOSE as usize {
+    // programmatic close sends WM_CLOSE directly. A console title sees
+    // neither kind of request.
+    if close_requested(message, wparam) {
         end_title("window closed", Box::new(|| {}));
         return 0;
     }
@@ -185,13 +302,42 @@ extern "system" fn window_proc(
     }
     // SAFETY: the procedure `hook` stored, called the way the system would.
     unsafe {
-        let title = wm::GetPropW(hwnd, TITLE_PROC);
+        let mut title = wm::GetPropW(hwnd, TITLE_PROC);
+        if title.is_null() && ansi {
+            let atom = wm::GetClassLongPtrW(hwnd, wm::GCW_ATOM) as u16;
+            let address = CLASS_PROCS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find_map(|&(registered, address)| (registered == atom).then_some(address))
+                .unwrap_or(0);
+            title = address as *mut c_void;
+            if !title.is_null() {
+                wm::SetPropW(hwnd, TITLE_PROC, title);
+            }
+        }
         if message == wm::WM_NCDESTROY {
             wm::RemovePropW(hwnd, TITLE_PROC);
         }
+        if title.is_null() {
+            return if ansi {
+                wm::DefWindowProcA(hwnd, message, wparam, lparam)
+            } else {
+                wm::DefWindowProcW(hwnd, message, wparam, lparam)
+            };
+        }
         let title = std::mem::transmute::<*mut c_void, wm::WNDPROC>(title);
-        wm::CallWindowProcW(title, hwnd, message, wparam, lparam)
+        if ansi {
+            wm::CallWindowProcA(title, hwnd, message, wparam, lparam)
+        } else {
+            wm::CallWindowProcW(title, hwnd, message, wparam, lparam)
+        }
     }
+}
+
+fn close_requested(message: u32, wparam: WPARAM) -> bool {
+    message == wm::WM_CLOSE
+        || (message == wm::WM_SYSCOMMAND && wparam & 0xFFF0 == wm::SC_CLOSE as usize)
 }
 
 /// Suspends the title as the console does when it ends it, runs `then`
@@ -289,6 +435,9 @@ fn end() {
     // Compiled host pipelines kept for the next run.
     #[cfg(windows)]
     victory_gpu::pipeline::save_pipeline_cache();
+    if let Some(finish) = PROCESS_FINISH.get() {
+        finish();
+    }
     // SAFETY: ends this process, as the console ends a suspended title.
     unsafe { TerminateProcess(GetCurrentProcess(), 0) };
 }
@@ -303,6 +452,7 @@ pub(crate) fn module() -> HleModule {
         exports: vec![
             hle_export!(RegisterAppStateChangeNotification),
             hle_export!(UnregisterAppStateChangeNotification),
+            hle_export!(RegisterClassExA),
             hle_export!(CreateWindowExW),
             hle_export!(CreateWindowExA),
         ],
@@ -348,6 +498,21 @@ mod tests {
     }
 
     #[test]
+    fn user_and_programmatic_close_requests_end_the_title() {
+        assert!(close_requested(wm::WM_CLOSE, 0));
+        assert!(close_requested(wm::WM_SYSCOMMAND, wm::SC_CLOSE as usize));
+        assert!(close_requested(wm::WM_SYSCOMMAND, wm::SC_CLOSE as usize | 3));
+        assert!(!close_requested(wm::WM_SYSCOMMAND, wm::SC_MINIMIZE as usize));
+        assert!(!close_requested(wm::WM_DESTROY, 0));
+    }
+
+    #[test]
+    fn process_finalizer_cannot_be_replaced() {
+        assert!(set_process_finish(|| {}));
+        assert!(!set_process_finish(|| {}));
+    }
+
+    #[test]
     fn hooked_windows_still_reach_the_title_procedure() {
         let null = std::ptr::null_mut();
         let hwnd = CreateWindowExW(
@@ -376,6 +541,121 @@ mod tests {
         }
     }
 
+    #[test]
+    fn registered_class_hooks_windows_created_outside_import_wrapper() {
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+
+        const CLASS: &[u8] = b"neptune.lifecycle.registered\0";
+        const NAME: &[u8] = b"registered\0";
+        // SAFETY: null asks for this executable's module handle.
+        let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+        let class = WindowClassExA {
+            cb_size: size_of::<WindowClassExA>() as u32,
+            style: 0,
+            wnd_proc: Some(recording_a),
+            cls_extra: 0,
+            wnd_extra: 0,
+            instance,
+            icon: std::ptr::null_mut(),
+            cursor: std::ptr::null_mut(),
+            background: std::ptr::null_mut(),
+            menu_name: std::ptr::null(),
+            class_name: CLASS.as_ptr(),
+            small_icon: std::ptr::null_mut(),
+        };
+        let atom = RegisterClassExA(&class);
+        assert_ne!(atom, 0);
+        // Deliberately bypass our CreateWindowExA import wrapper. The class
+        // procedure must keep lifecycle interception in front by itself.
+        let hwnd = unsafe {
+            wm::CreateWindowExA(
+                0,
+                CLASS.as_ptr(),
+                NAME.as_ptr(),
+                0,
+                0,
+                0,
+                10,
+                10,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance,
+                std::ptr::null(),
+            )
+        };
+        assert!(!hwnd.is_null());
+        unsafe {
+            assert!(!wm::GetPropW(hwnd, TITLE_PROC).is_null());
+            COMMANDS.with(|commands| commands.borrow_mut().clear());
+            wm::SendMessageA(hwnd, wm::WM_SYSCOMMAND, wm::SC_KEYMENU as usize, 0);
+            COMMANDS.with(|commands| assert!(commands.borrow().is_empty()));
+            wm::DestroyWindow(hwnd);
+            wm::UnregisterClassA(CLASS.as_ptr(), instance);
+        }
+    }
+
+    #[test]
+    fn class_hook_and_create_import_do_not_chain_the_same_wndproc_twice() {
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+
+        const CLASS: &[u8] = b"neptune.lifecycle.double.chain\0";
+        const TITLE: &[u8] = b"chained\0";
+        // SAFETY: null fetches the test executable's HINSTANCE.
+        let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+        let class = WindowClassExA {
+            cb_size: std::mem::size_of::<WindowClassExA>() as u32,
+            style: 0,
+            wnd_proc: Some(recording_a),
+            cls_extra: 0,
+            wnd_extra: 0,
+            instance,
+            icon: std::ptr::null_mut(),
+            cursor: std::ptr::null_mut(),
+            background: std::ptr::null_mut(),
+            menu_name: std::ptr::null(),
+            class_name: CLASS.as_ptr(),
+            small_icon: std::ptr::null_mut(),
+        };
+        assert_ne!(RegisterClassExA(&class), 0);
+        // Control: the same registered class must create through user32
+        // before attributing any failure to our CreateWindowExA import.
+        let native = unsafe {
+            wm::CreateWindowExA(
+                0, CLASS.as_ptr(), TITLE.as_ptr(), 0, 0, 0, 10, 10,
+                std::ptr::null_mut(), std::ptr::null_mut(), instance,
+                std::ptr::null(),
+            )
+        };
+        assert!(
+            !native.is_null(),
+            "direct user32 CreateWindowExA failed, last_error={}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        );
+        unsafe { wm::DestroyWindow(native); }
+        // Both imports are deliberately routed through the HLE wrappers.
+        // The original title procedure must remain intact as a property.
+        let hwnd = CreateWindowExA(
+            0, CLASS.as_ptr(), TITLE.as_ptr(), 0, 0, 0, 10, 10,
+            std::ptr::null_mut(), std::ptr::null_mut(), instance,
+            std::ptr::null(),
+        );
+        assert!(
+            !hwnd.is_null(),
+            "CreateWindowExA returned NULL, Win32 last_error={}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        );
+        unsafe {
+            let title = wm::GetPropW(hwnd, TITLE_PROC);
+            assert_eq!(title, recording_a as *const () as *mut c_void,
+                "double subclass replaced the original WndProc with a thunk");
+            COMMANDS.with(|c| c.borrow_mut().clear());
+            wm::SendMessageA(hwnd, wm::WM_SYSCOMMAND, wm::SC_MINIMIZE as usize, 0);
+            COMMANDS.with(|c| assert_eq!(c.borrow().as_slice(), [wm::SC_MINIMIZE as usize]));
+            wm::DestroyWindow(hwnd);
+            assert_ne!(wm::UnregisterClassA(CLASS.as_ptr(), instance), 0);
+        }
+    }
+
     thread_local! {
         /// The system commands `recording` received, low four bits cleared.
         static COMMANDS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -395,6 +675,22 @@ mod tests {
         }
         // SAFETY: the system's default procedure, called as the system would.
         unsafe { wm::DefWindowProcW(hwnd, message, wparam, lparam) }
+    }
+
+    /// ANSI fixture: using DefWindowProcW for WM_NCCREATE of a class
+    /// registered with RegisterClassExA can reject native window creation.
+    /// Keep the reference procedure on the same A/W contract as the class.
+    extern "system" fn recording_a(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if message == wm::WM_SYSCOMMAND {
+            COMMANDS.with(|c| c.borrow_mut().push(wparam & 0xFFF0));
+            return 0;
+        }
+        unsafe { wm::DefWindowProcA(hwnd, message, wparam, lparam) }
     }
 
     #[test]
