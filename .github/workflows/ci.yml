@@ -28,6 +28,18 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Clippy, diagnostics build
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # Parse the opt-in R52 native safety gate with Windows PowerShell 5.1.
+      # R52 fixtures are not in the public source: parsing is not execution.
+      - name: R52 safety runner syntax (PowerShell 5.1)
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile('tests/r52-unwind-gate.ps1', [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Host $_ }
+            exit 1
+          }
       # The panicking worker test owns process-global state. Run it alone.
       - name: Heap worker panic join (isolated)
         run: cargo test -p victory-gpu --locked heap_worker::tests::neptune_worker_join_failure_remains_failure -- --ignored --exact --nocapture --test-threads=1
