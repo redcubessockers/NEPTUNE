@@ -283,9 +283,9 @@ impl Engines {
     fn open_path(path: &str) -> Option<Engines> {
         use windows_sys::Win32::System::Performance::{PdhAddEnglishCounterW, PdhCollectQueryData, PdhOpenQueryW};
         let path: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-        let (mut query, mut counter) = (std::ptr::null_mut(), std::ptr::null_mut());
-        // SAFETY: plain calls with a terminated string and places for the
-        // two handles, kept for the life of the process.
+        let mut query = std::ptr::null_mut();
+        // SAFETY: plain calls with a terminated string and valid output
+        // locations. The query is owned immediately after a successful open.
         unsafe {
             if PdhOpenQueryW(std::ptr::null(), 0, &mut query) != 0 {
                 return None;
@@ -295,14 +295,15 @@ impl Engines {
                 let (opens, closes, status) = v.get();
                 v.set((opens + 1, closes, status));
             });
-            if PdhAddEnglishCounterW(query, path.as_ptr(), 0, &mut counter) != 0 {
-                return None;
+            let mut owner = Engines { query, counter: std::ptr::null_mut(), buffer: Vec::new() };
+            if PdhAddEnglishCounterW(owner.query, path.as_ptr(), 0, &mut owner.counter) != 0 {
+                return None; // owner closes the query, even on partial initialization
             }
             // The first collection has nothing to compare with: a figure
             // comes from the second on.
-            PdhCollectQueryData(query);
+            PdhCollectQueryData(owner.query);
+            Some(owner)
         }
-        Some(Engines { query, counter, buffer: Vec::new() })
     }
 
     /// The figures since the last call.
@@ -341,6 +342,23 @@ impl Engines {
                 }
             }
             Some(out)
+        }
+    }
+}
+
+impl Drop for Engines {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Performance::PdhCloseQuery;
+        // SAFETY: this owner holds exactly one successfully opened query.
+        // PDH closes every counter associated with it; no separate counter close.
+        let status = unsafe { PdhCloseQuery(self.query) };
+        #[cfg(test)]
+        PDH_LIFETIME.with(|v| {
+            let (opens, closes, _) = v.get();
+            v.set((opens, closes + 1, status));
+        });
+        if status != 0 {
+            tracing::warn!(status = format_args!("{status:#010x}"), "PDH query close failed");
         }
     }
 }
