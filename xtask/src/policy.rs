@@ -210,7 +210,9 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
         let forbidden = [
             "<script", "<image", "<foreignobject", "<iframe", "<animate", "<set",
             "<style", "href=", "url(", "data:", "<!doctype", "<?", "onload=",
-            "onbegin=", "javascript:", "@import",
+            "onbegin=", "onerror=", "onclick=", "onmouseover=", "onfocus=",
+            "onpointer", "onkey", "onmouse", "ontouch", "onanimation",
+            "javascript:", "@import", "style=", "src=",
         ];
         if !markup.starts_with("<svg ")
             || !markup.trim_end().ends_with("</svg>")
