@@ -1,11 +1,13 @@
 <p align="center">
-  <img src="docs/assets/neptune-logo.svg" width="1280" alt="NEPTUNE. Original square-edged N circuit emblem and pixel wordmark. Understand the machine. Prove the port.">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/neptune-logo.svg">
+    <img src="docs/assets/neptune-logo-animated.gif" width="1280" height="300" alt="NEPTUNE native compatibility runtime. Square-edged N emblem, pixel wordmark, and restrained status lights. Understand the machine. Prove the port.">
+  </picture>
 </p>
-
-<h1 align="center">NEPTUNE</h1>
 
 <p align="center"><strong>NATIVE X86-64 · WINDOWS · D3D12 · SHADER RECONSTRUCTION</strong></p>
 <p align="center"><code>THE BLACK SHEEP OF PC PORT ENGINEERING</code></p>
+<p align="center"><sub>NO WEBSITE JS · <a href="docs/assets/neptune-logo.svg">STATIC SVG</a> · <a href="docs/assets/neptune-logo-motion.md">MOTION SPEC</a></sub></p>
 
 <p align="center">
   <a href="#machine-path">MACHINE PATH</a> ·
