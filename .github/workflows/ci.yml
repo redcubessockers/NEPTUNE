@@ -36,3 +36,41 @@ jobs:
       # d3d10warp) when several tests used it at once. One test at a time has not shown it.
       - name: Tests, victory-gpu (one at a time)
         run: cargo test -p victory-gpu --locked -- --test-threads=1
+
+  # Independent documentation gate. Do not suppress or replace strict Clippy.
+  asset-policy:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Test source and original SVG admission rules
+        run: cargo test -p xtask --locked -- --test-threads=1
+      - name: Repository asset-policy validation
+        run: cargo xtask policy
+      - name: Inspect original logo XML and exact SHA-256
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'docs/assets/neptune-logo.svg'
+          $expected = 'feadee383e3569b64357d041dbe877d1a49189ce8d81bb26abf9a24b71b0d617'
+          $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -cne $expected) { throw "BRAND_LOGO_DRIFT $actual" }
+          $settings = New-Object System.Xml.XmlReaderSettings
+          $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+          $settings.XmlResolver = $null
+          $reader = [System.Xml.XmlReader]::Create($path, $settings)
+          try {
+            $document = New-Object System.Xml.XmlDocument
+            $document.XmlResolver = $null
+            $document.Load($reader)
+          } finally {
+            $reader.Dispose()
+          }
+          if ($document.DocumentElement.LocalName -cne 'svg') { throw 'NOT_SVG' }
+          if ($document.DocumentElement.GetAttribute('width') -cne '1280') { throw 'WIDTH_DRIFT' }
+          if ($document.DocumentElement.GetAttribute('height') -cne '300') { throw 'HEIGHT_DRIFT' }
+          $readme = Get-Content -LiteralPath README.md -Raw
+          if (!$readme.Contains('src="docs/assets/neptune-logo.svg"')) { throw 'README_LOGO_MISSING' }
+          Write-Output "R62_BRAND_XML=PASS SHA256=$actual"
