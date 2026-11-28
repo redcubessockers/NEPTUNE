@@ -170,6 +170,14 @@ struct EngineKey {
     engine: u32,
 }
 
+/// The DXGI adapter identity carried into Windows' GPU Engine counters.
+/// High is stored as raw bits because PDH prints the signed LONG in hex.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AdapterLuid {
+    high: u32,
+    low: u32,
+}
+
 /// One PDH process/engine sample.
 #[derive(Debug, PartialEq)]
 struct Engine {
@@ -221,6 +229,16 @@ fn busiest(engines: &[Engine], pid: Option<u32>) -> (f32, HashMap<&str, f64>) {
     }
     let top = by_kind.values().copied().fold(0.0, f64::max);
     (top as f32, by_kind)
+}
+
+#[cfg(test)]
+fn busiest_on_adapter(
+    engines: &[Engine],
+    pid: Option<u32>,
+    _adapter: AdapterLuid,
+) -> (f32, HashMap<&str, f64>) {
+    // RED scaffold only: current R71 behavior still sees every adapter.
+    busiest(engines, pid)
 }
 
 // Keep the PDH per-instance status decision explicit for regression tests.
@@ -418,6 +436,23 @@ mod tests {
         assert_eq!(parse_instance("pid_8_luid_0x0_0x1_phys_0_eng_5_engtype_Compute_0"), Some((8, second, "Compute_0")));
         assert_eq!(parse_instance("_Total"), None);
         assert_eq!(parse_instance("pid_x_engtype_3D"), None);
+    }
+
+    #[test]
+    fn selected_host_adapter_does_not_take_another_adapters_engine() {
+        let e = |adapter_low, percent| Engine {
+            pid: 7,
+            key: EngineKey { luid_high: 0, luid_low: adapter_low, phys: 0, engine: 0 },
+            kind: "3D".into(),
+            percent,
+        };
+        let selected = AdapterLuid { high: 0, low: 1 };
+        let engines = [e(1, 31.0), e(2, 99.0)];
+        assert_eq!(
+            busiest_on_adapter(&engines, None, selected).0,
+            31.0,
+            "the host adapter must not inherit a busier engine from another GPU",
+        );
     }
 
     #[test]
