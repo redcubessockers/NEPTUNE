@@ -199,9 +199,20 @@ fn fit(parent: HWND, x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32,
     }
     tracing::info!(width, height, to = ?fitted, "title window fitted to the screen");
     let (w, h) = fitted;
-    let left = area.left + (area.right - area.left - w) / 2;
-    let top = area.top + (area.bottom - area.top - h) / 2;
+    let (left, top) = center_in(&area, w, h);
     (left, top, w, h)
+}
+
+/// The arithmetic performed when a top-level window must be centred.
+/// Kept independent from the system work-area query for boundary testing.
+fn center_in(area: &RECT, w: i32, h: i32) -> (i32, i32) {
+    // The center calculation must use the same widened coordinate domain
+    // as fit_into. Here w/h already fit in their positive monitor spans.
+    let left = i64::from(area.left)
+        + (i64::from(area.right) - i64::from(area.left) - i64::from(w)) / 2;
+    let top = i64::from(area.top)
+        + (i64::from(area.bottom) - i64::from(area.top) - i64::from(h)) / 2;
+    (left as i32, top as i32)
 }
 
 /// `width` x `height` scaled down to fit `area`, or unchanged if it fits
@@ -577,6 +588,30 @@ mod tests {
         UnregisterAppStateChangeNotification(a);
         let left: Vec<_> = routines().iter().map(|r| r.0).collect();
         assert_eq!(left, [b]);
+    }
+
+    #[test]
+    fn extreme_work_area_centering_must_not_wrap() {
+        let area = RECT {
+            left: i32::MIN,
+            right: i32::MAX,
+            top: 0,
+            bottom: 100,
+        };
+        // Same reachable inputs as fit(3000, 200) after fit_into: 1500x100.
+        assert_eq!(fit_into(&area, 3000, 200), (1500, 100));
+        assert_eq!(center_in(&area, 1500, 100), (-751, 0));
+    }
+
+    #[test]
+    fn ordinary_work_area_centering_stays_unchanged() {
+        let area = RECT {
+            left: -960,
+            right: 960,
+            top: -540,
+            bottom: 540,
+        };
+        assert_eq!(center_in(&area, 1280, 720), (-640, -360));
     }
 
     #[test]
