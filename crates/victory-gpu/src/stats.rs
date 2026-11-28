@@ -468,6 +468,28 @@ mod tests {
         assert_eq!(busiest(&[e(70.0), e(f64::NAN)], None).0, 70.0);
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "native Windows GPU Engine PDH snapshot; requires real GPU counters"]
+    fn physical_gpu_engine_pdh_snapshot() {
+        use std::collections::HashSet;
+
+        let mut pdh = Engines::open().expect("open native Windows GPU Engine counter");
+        std::thread::sleep(Duration::from_millis(1100)); // second PDH rate sample
+        let samples = pdh.look().expect("read formatted GPU Engine counter array");
+        assert!(!samples.is_empty(), "Windows returned no usable GPU engine instances");
+        let adapters: HashSet<_> = samples.iter()
+            .map(|e| (e.key.luid_high, e.key.luid_low)).collect();
+        let engine_keys: HashSet<_> = samples.iter().map(|e| e.key).collect();
+        assert!(!adapters.is_empty() && !engine_keys.is_empty());
+        let (all, by_type) = busiest(&samples, None);
+        assert!(all.is_finite() && (0.0..=100.0).contains(&all));
+        println!(
+            "R71_NATIVE_PDH_INSTANCES={} ADAPTER_LUIDS={} PHYSICAL_ENGINES={} BUSIEST_PERCENT={} ENGINE_TYPES={}",
+            samples.len(), adapters.len(), engine_keys.len(), all, by_type.len(),
+        );
+    }
+
     /// The looks that need no card: they answer on any machine.
     #[test]
     fn the_processors_and_the_memory_answer() {
