@@ -1,342 +1,184 @@
-# NEPTUNE
+<p align="center">
+  <img src="docs/assets/neptune-logo.svg" width="1280" alt="NEPTUNE. Original square-edged N circuit emblem and pixel wordmark. Understand the machine. Prove the port.">
+</p>
 
-native execution. native graphics. no full-system emulation.
+<h1 align="center">NEPTUNE</h1>
 
-NEPTUNE is an experimental x86-64 Windows compatibility and graphics runtime
-derived from VIctory. the objective is a native PC execution path for Xbox
-Series software, with the smallest platform translation layer that actually
-works. the title's CPU code runs on the host processor; its console services,
-GPU commands and shader programs require translation.
+<p align="center"><strong>NATIVE X86-64 · WINDOWS · D3D12 · SHADER RECONSTRUCTION</strong></p>
+<p align="center"><code>THE BLACK SHEEP OF PC PORT ENGINEERING</code></p>
 
-**development workspace, not a playable release.**
+<p align="center">
+  <a href="#machine-path">MACHINE PATH</a> ·
+  <a href="#code-map">SOURCE MAP</a> ·
+  <a href="#evidence-not-marketing">EVIDENCE</a> ·
+  <a href="#build-and-check">BUILD</a> ·
+  <a href="#the-release-wall">RELEASE GATE</a>
+</p>
 
-## machine path
+---
 
-The native CPU and shader translation paths converge at the host graphics API.
+> [!CAUTION]
+> **EXPERIMENTAL RUNTIME — NOT A PLAYABLE PC PORT.**
+>
+> This repository has native CPU, loader, platform-service, shader and D3D12 code. That does **not** establish complete API coverage, correct world rendering, title stability, or playable gameplay. The local R50 binary remains protected. The R52 unwind safety gate remains **BLOCKED**. Neither CI success nor GPU copy tests grant release approval.
+
+```text
+NEPTUNE//PROJECT STATUS                            2026-11-28
+
+TARGET          Windows 11 / x86-64 / Rust 1.100.0
+EXECUTION       native title x86-64 instructions
+TRANSLATION     console ABI + D3D12.X + GFX10 shaders
+GPU BACKEND     host D3D12
+PRODUCTION      protected R50 checkpoint; not a public release
+REVIEW          R54-R61 draft PR #2; isolated and not merged
+R52             BLOCKED / full safety integration not verified
+TITLE           NOT VERIFIED as fully playable
+PERFORMANCE     UNKNOWN / no validated game FPS advantage
+```
+
+## Why this exists
+
+Most of the hard work is **not** executing x86-64 instructions. The host CPU already understands them. The difficult boundary is everything those instructions expect around them: the executable image, imports, TLS, stack unwinding, console services, GPU command encoding, shader ISA, resource ownership, cache coherency and timing.
+
+NEPTUNE derives from [VIctory](https://github.com/Marvisak/VIctory). Its objective is a narrowly scoped **native Windows compatibility runtime** for Xbox Series software, not full-system CPU emulation and not a source-code reimplementation of the title.
+
+**"bare-metal style" means observing actual bytes and machine interfaces.** It does not mean bypassing Windows. The host operating system, D3D12 runtime and driver remain real dependencies.
+
+## Machine path
 
 ```mermaid
 flowchart TD
-    PE["PE32+ title image"] --> CPU["Native x86-64 execution"]
-    CPU --> ABI["Platform ABI and runtime services"]
-    ABI --> CMD["D3D12.X command translation"]
-    ISA["Console GPU shader ISA"] --> IR["IR and control-flow recovery"]
-    IR --> DXIL["DXIL generation"]
-    CMD --> HOST["Host D3D12 and driver"]
-    DXIL --> HOST
-    HOST --> GPU["Physical GPU"]
+    A["Title PE32+ x86-64 image"] --> B["Loader and native x86-64 code"]
+    B --> C["Imported console services"]
+    C --> D["HLE and allowed Win32 host APIs"]
+    B --> E["D3D12.X command calls"]
+    E --> F["Host D3D12 device and queues"]
+    G["GFX10 shader programs"] --> H["Decode / SSA IR / control flow"]
+    H --> I["Host DXIL generation"]
+    I --> F
+    F --> J["Graphics driver and physical GPU"]
 ```
 
-this is not a source-level port of the original game. it is a compatibility
-runtime with native CPU execution and shader recompilation. not every console
-API or GPU behavior is implemented. CPU-native execution is not proof of
-correct rendering, security, or gameplay.
+The loader prepares an image for the Windows loader, maps title DLLs, resolves imports, initializes TLS and enters the native code path. Console calls are handled by HLE, selected host APIs or known title DLLs. Unknown calls are reported through generated stubs; pretending they succeeded is not compatibility.
 
-## current evidence
+Shader work passes through instruction decoding, intermediate representation, control-flow recovery, resource tracing and host DXIL emission. Command translation and shader conversion meet at host D3D12. Both can still be wrong on actual workloads.
 
-checkpoint: R41B, 2026-11-28. Executable evidence uses the R39F source baseline; R40A compares build profiles without changing release defaults. Windows 11 x64, Intel Core i5-12400F,
-NVIDIA GeForce RTX 4060 8 GB. Rust 1.100.0.
+See [architecture](docs/architecture.md) and the [engineering contract](docs/ENGINEERING-CONTRACT.md).
 
-| boundary | evidence |
-| --- | --- |
-| workspace regression | 686 passed, 0 failed, 40 ignored (exit 0) |
-| source asset-policy check | 228 files passed in integrated regression |
-| physical D3D12 two-flight publication | fence ordering verified on the test GPU |
-| command-list retirement | fresh physical fixtures checked readback and completion |
-| experimental AVX2 detiling | 24 held-out shapes matched scalar bytes; not default |
-| CLI native entry point | two raw PE32+ fixtures returned distinct expected x86-64 results; two malformed/no-entry cases rejected |
-| CLI console graphics ABI | strict IAT binding, valid memory-range witness and null E_INVALIDARG verified |
-| Thin LTO | mixed CPU measurements; 520 passed, 0 failed, 40 ignored across formats, shader and GPU suites |
-| actual title startup | user-reported R41A run reached menu, intro and credits; world rendering incorrect |
-| real-game FPS / frame time | user-supplied R41A logs: menu near 30 FPS, lowest report 0.2 FPS, highest reported window mean 5731.8 ms; not a controlled A/B |
-| long-session stability / VRAM peaks | not established |
+## Code map
 
-R39C's synthetic AVX2 test measured up to 1.80x on a held-out CPU detiling
-workload. some shapes regressed. this is not game FPS. the experimental
-path stays disabled unless `VICTORY_DETILE_AVX2=1` is explicitly set.
-unsupported CPU features and other layouts use the scalar path.
+| Source | What is actually there | Proof boundary |
+| :--- | :--- | :--- |
+| [`apps/victory`](apps/victory) | CLI for inspect, census, convert, run | CLI execution is not a gameplay claim |
+| [`victory-pe`](crates/victory-pe) | read-only PE32+ and COFF import analysis | input parsing and ABI fixture tests |
+| [`victory-loader`](crates/victory-loader) | mapping, relocations, TLS, imports, native entry, crash paths | Windows x64 process and unwind witnesses |
+| [`victory-hle`](crates/victory-hle) | console service implementations and host pass-through | each resolved function and result |
+| [`victory-gpu`](crates/victory-gpu) | D3D12.X objects, queues, fences, memory and command translation | ordering, lifetime and GPU readback |
+| [`victory-shader`](crates/victory-shader) | GFX10 decode, IR, resource tracing and host shader generation | differentiated shader output and GPU behavior |
+| [`victory-formats`](crates/victory-formats) | texture layout/detiling and codec handling | byte-exact data and boundary cases |
+| [`victory-pipeline`](crates/victory-pipeline) | deterministic converters and content-addressed cache | cache identity and reproducibility |
+| [`victory-game`](crates/victory-game) | title-format glue and build identity interfaces | `KNOWN_BUILDS` is empty in public baseline |
+| [`victory-core`](crates/victory-core) | configuration, logging and asset guards | filesystem / config invariants |
+| [`xtask`](xtask) | asset-policy enforcement and Git hooks | source files remain inside allowlist |
 
-R38D's four-list admission bound is integrated. the bound is a count of
-lists, not an exact memory limit. R39E fixes duplicate event ticks under concurrent waits. the
-RED test observed four successful waits sharing tick 1; the corrected
-implementation delivered four distinct ticks. eight further concurrent
-rounds passed, together with seven GPU/worker fixture executions.
-R39F adds process-lifetime heap worker stop, wake and join ownership.
-The concurrent shutdown RED fixture falsely reported a live worker joined;
-GREEN returns false for the second caller until the worker is joined.
-Eight targeted executions passed on the integrated candidate, including
-five physical GPU fixtures. Shutdown does not cover forced process
-termination, and the wait budget does not bound arbitrary destructors.
-Worker starvation and full title-level lifecycle are still open.
-These are scoped tests, not an end-to-end gameplay or FPS result.
+The inherited `victory-*` crate and binary names remain intentional. A cosmetic rename must not invalidate ABI references, paths, scripts or forensic history.
 
-### native entry witnesses
+## Evidence, not marketing
 
-R41A ran two hand-built PE32+ programs via the optimized runtime's actual
-CLI and native entry point. The only code difference was one immediate byte.
-The returned values were 23317927 and 23317926, respectively. A bind-only
-run did not execute the entry point; a missing entry point and an invalid PE
-signature were rejected.
+The lanes below refer to **different artifacts**. They are not a cumulative pass count.
 
-R41B ran hand-built PE32+ import fixtures in strict mode, calling the
-console graphics virtual-memory interface through the IAT. A valid
-configuration returned a nonzero ordered address range; a null argument
-returned HRESULT 0x80070057. This establishes the tested ABI path, not
-GPU queue creation, rendering, or gameplay.
+| Check | Observed evidence | Status |
+| :--- | :--- | :--- |
+| Public baseline source | 9 platform/title crates, Rust 1.100.0 manifest, Windows/D3D12 backend | **SOURCE OBSERVED** |
+| Native PE entry | older R41 synthetic PE32+ fixtures entered native code and returned distinct values | **HISTORICAL FIXTURE PASS** |
+| Physical D3D12 fixtures | R58 review-branch tests on RTX 4060, adapter `10de:2882`, with explicit GPU readback | **SCOPED HARDWARE PASS** |
+| R54 worker lifecycle | native RED/GREEN witness retains join failure after a panicking worker | **SCOPED NATIVE PASS** |
+| R61 Windows CI | strict Clippy, diagnostics, isolated worker and workspace/GPU test steps on PR head `5fd1866f` | **PASS ON THAT COMMIT** |
+| R52 stack unwind | installed RPCRT4 bytes and native bounded-unwind counterexamples recorded | **WITNESS VERIFIED / INTEGRATION BLOCKED** |
+| R52 corrected safety runner | published for review, but fresh host staging encountered `c0000043` | **NOT TESTED** |
+| Actual title world rendering | historical user session reported incomplete rendering | **NOT VERIFIED** |
+| Real gameplay, frame-time A/B, long session | no complete current release-bound proof | **NOT TESTED** |
+| Vulkan backend / universal GPU support | no implementation or multi-vendor parity established | **UNKNOWN / NOT CLAIMED** |
 
-R40A Thin LTO showed mixed CPU microbenchmark results and zero readback
-mismatches across 22 physical GPU copy fixtures. It remains experimental.
-PGO has not been tested. No FPS comparison or playable release is claimed.
+**Exact evidence:** [R54–R61 review PR #2](https://github.com/redcubessockers/NEPTUNE/pull/2) · [Windows CI run 46137964800](https://github.com/redcubessockers/NEPTUNE/actions/runs/46137964800) · [historical engineering journal](docs/ENGINEERING-JOURNAL.md).
 
-### local R42C experiment (not published source)
+> [!IMPORTANT]
+> GitHub-hosted Windows CI is **not** a physical RTX 4060 test. A physical-GPU fixture is **not** an actual title session. A past benchmark is **not** evidence of current HEAD performance.
 
-a user-run R41A session exposed long waits for title memory remapping,
-dropped draws and incomplete world rendering. no gameplay pass is claimed.
+### R52 / the first fault
 
-R42C locally tests contiguous physical alias mapping in one host view
-instead of one view per 64 KiB page. it is opt-in only. the controlled
-Windows fixture with 32 pages and 128 remaps per sample measured a median
-30.720 ms for the original path and 9.163 ms for the grouped path,
-nine paired wins out of nine. the workspace regression was 687 passed,
-0 failed and 41 ignored; an independent physical GPU copy fixture
-returned 1 MiB with zero mismatches. these results are not game FPS.
+The native investigation isolated a suspicious PC in the installed Windows RPC library:
 
-the R42C implementation and executable are local candidate artifacts,
-not part of the public branch. no new derivative code is published while
-inherited source licensing remains unresolved.
+```text
+RPCRT4.dll     version 10.0.26100.1
+RVA 0x589BF    41 5C 5F 5B C3
+RVA 0x589C0       5C 5F 5B C3
+FUNCTION       0x587E6 .. 0x589C3
+UNWIND         chained metadata
+OLD INVALID    0xC0000005 / access violation
+BOUNDED        0xC0000028 / STATUS_BAD_STACK
+```
 
-### local R43 diagnostics checkpoint (not published source)
+The invalid PC starts at byte two of `POP R12`. A controlled old unwinder path faults; the bounded Windows API fails closed in that synthetic fixture. This does **not** prove the title executed an invalid PC or prove the entire profiler is now safe. The integrated R52 safety gate stays blocked. [Detailed R61 evidence](https://github.com/redcubessockers/NEPTUNE/blob/work/r54-worker-panic-join/docs/R61-UNWIND-SAFETY.txt).
 
-the legacy user directory contained 794 files but no persistent gameplay
-trace. the existing tracing subscriber sent events only to stderr.
-R43 adds a bounded per-process diagnostic log alongside stderr, with UTC
-and monotonic timestamps, session and process identity, Rust thread IDs,
-severity and subsystem. the default log directory is
-`%LOCALAPPDATA%\NEPTUNE\logs`; `NEPTUNE_LOG_DIR` overrides it.
-`NEPTUNE_LOG` takes precedence over the legacy `VICTORY_LOG`.
-cache and persistent title data stay in their existing locations.
+## Build and check
 
-local verification: 689 workspace tests passed, 0 failed, 41 ignored.
-a physical D3D12 copy fixture read back 1 MiB with zero mismatches.
-a bind-only PE fixture produced four persistent tracing records.
-the old user directory's 794 file hashes remained unchanged.
-
-the log sink is synchronous, with a 64 MiB per-session limit and a
-loss warning. stdout is not captured by this sink. the normal-return
-footer does not establish successful title shutdown. gameplay logging
-overhead, complete frame correlation, world rendering, pipeline
-correctness and controlled gameplay FPS are still unverified.
-
-the R43 implementation remains local. no new derivative code or
-executable is published under the unresolved CC0-only licensing claim.
-
-### local R44 pipeline boundary verification (not published source)
-
-the stream parser previously accepted a zero-length description and did
-not check the full size of known subobjects before reading their payload.
-R44 locally validates the known prefix before decoding it. malformed
-known extents return E_INVALIDARG. unknown subobject compatibility
-behavior remains unchanged and is explicitly logged.
-
-the focused regression covers 440 truncated lengths across four
-subobject kinds and seven incomplete trailing headers, plus existing
-valid-stream tests. GPU crate regression: 254 passed, 0 failed, 28 ignored.
-a separate physical D3D12 fixture copied 1 MiB with zero mismatches.
-these tests do not establish title pipeline creation or rendering parity.
-
-the NVIDIA fork is a separate reference, not the NEPTUNE runtime.
-frame generation throughput must not be reported as native FPS.
-no new derivative source or executable has been published.
-
-### local R45 diagnostic accounting (not published source)
-
-the previous collector drained approximately every second but printed only
-on a five-second reporting interval. R45 retains observations until the
-report, bounds retained reason keys to 128 and each key to 512 bytes, and
-counts overflow and reasons omitted from the top 40 separately. unknown
-causes remain unknown. diagnostic observations are not unique draw counts.
-
-local release workspace: 691 passed, 0 failed, 41 ignored. separate
-physical RTX 4060 D3D12 copy fixture: 1 MiB, zero mismatches.
-diagnostic pipeline tests: 6 passed. full diagnostic regression failed
-with STATUS_ACCESS_VIOLATION in the profiler stack-walk test. isolated
-R44 and R45 repetitions of that test passed 60,000 walks each; the
-failure remains unresolved and is not attributed to the new collector.
-
-no gameplay A/B, world-rendering parity or full CC0-only relicensing
-claim. no new derivative source or executable distributed.
-
-### local R46 native x64 unwind bounds (not published source)
-
-a deterministic fixture exposed a saved-RBX read outside a 512-byte stack
-copy: the previous guard accepted offset 512, width 8. R46 checks near
-and far GPR/XMM save offsets, multi-slot operand lengths, and conservative
-stack bounds before the OS unwinder. Eight focused cases passed.
-
-local Windows release regression: 691 passed, 0 failed, 41 ignored.
-GPU diagnostics regression: 276 passed, 0 failed, 27 ignored. Separate
-profiler stress: 60,000 walks, 291,307 frames. Physical RTX 4060 copy
-fixture: 1 MiB, zero mismatches. The earlier access violation is not
-conclusively attributed to this defect; full stack-walk safety and
-gameplay remain unverified. No performance improvement is claimed.
-
-### local R47–R48 forensic logging (not published source)
-
-R47 adds the Windows process and native thread IDs to timed records.
-R48 seals the persistent sink under its existing mutex before writing the
-terminal session marker. A live writer after close no longer appends
-bytes to the file; late writes are counted and reported on stderr.
-The footer describes pre-close losses, not subsequent stderr events.
-
-local Windows release regression: 693 passed, 0 failed, 41 ignored.
-GPU diagnostics regression: 276 passed, 0 failed, 27 ignored.
-Separate RTX 4060 copy/readback fixture: 1 MiB, zero mismatches.
-Both local executable builds passed. No new dependency or logging worker.
-Historical session provenance, actual gameplay, world rendering and
-performance remain unverified. The source licensing boundary is unchanged.
-
-### local R49 pipeline variant selection (not published source)
-
-The 64-entry target-format variant chain previously returned the original
-pipeline on exhaustion, despite the incompatible requested format.
-A synthetic selection regression reproduces this at the 65th distinct
-format. R49 rejects that selection explicitly, records the pipeline key
-and formats in a bounded warning, and counts the diagnostic observation.
-Existing variants remain selectable. This does not expand variant capacity
-or establish that any title reached the limit.
-
-local Windows release regression: 694 passed, 0 failed, 41 ignored.
-GPU diagnostics regression: 277 passed, 0 failed, 27 ignored.
-RTX 4060 copy/readback fixture: 1 MiB, zero mismatches.
-The existing depth-bounds PSO cache and render/readback test passed in
-a separate run without a skip message. Both local executable builds passed.
-No claim of gameplay, world rendering, or performance improvement.
-Source licensing and publication boundary unchanged.
-
-### local R50 bounded pipeline admission (not published source)
-
-The early-to-requested promotion now transfers its queue reference instead
-of retaining a second copy. Pending queue entries are capped at 4096.
-Speculative early work is deferred at capacity; new demand work is claimed
-for inline compilation outside the queue lock, rather than discarded due
-to admission pressure. The first and power-of-two overflow counts are
-logged. This bounds pending entries, not active compiles or memory bytes.
-Inline compilation can increase title-thread latency; no FPS gain claimed.
-
-Native Windows release regression: 697 passed, 0 failed, 41 ignored.
-GPU diagnostics regression: 280 passed, 0 failed, 27 ignored.
-Eight-thread promotion stress: 4096 distinct entries, each claimed once.
-Physical RTX 4060 copy/readback: 1 MiB, zero byte mismatches.
-Both local executable builds passed. Actual saturation through the title,
-worker shutdown, world rendering and gameplay remain unverified.
-Source licensing and publication boundary unchanged.
-
-### local R51/R52 diagnostic investigation (not a release)
-
-R51 native worker lifecycle fixtures observed six pipeline worker threads
-before final save and zero after it. The full diagnostics regression still
-aborted with access violation 0xc0000005. R50 remains the accepted local
-checkpoint.
-
-R52 reproduced a guard defect using the installed Windows RPC runtime's
-chained x64 unwind metadata. A program counter on the second byte of a
-multi-byte POP instruction is interpreted as POP RSP; the existing guard
-accepted that partial epilogue at the end of a runtime-function range.
-A conservative isolated candidate refused it. The same candidate also
-refused a valid instruction boundary whose epilogue crosses that range.
-Six standalone guard tests and one native metadata-lookup fixture passed.
-No unsafe OS unwind was attempted by those fixtures. Full integration,
-diagnostics regression, profile coverage and crash elimination are not
-verified. No new gameplay or FPS result.
-
-## tree
-
-| path | purpose |
-| --- | --- |
-| `apps/victory` | native command line executable |
-| `crates/victory-loader` | PE mapping, binding, execution |
-| `crates/victory-hle` | console ABI and platform services |
-| `crates/victory-gpu` | D3D12 objects, submission, memory, fences |
-| `crates/victory-shader` | GPU instruction decoding, IR, DXIL generation |
-| `crates/victory-formats` | texture layouts, detiling, codecs |
-| `crates/victory-pipeline` | conversion and content-addressed cache |
-| `crates/victory-pe` | executable and import-library inspection |
-| `crates/victory-core` | configuration, logging, asset guards |
-| `crates/victory-game` | title-specific interoperability |
-| `xtask` | repository asset checks |
-
-internal crate names, binary name and environment variables retain the
-VIctory names for compatibility. no cosmetic rename of the ABI.
-
-## build and verify
-
-Windows x64. Rust toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml).
-D3D12 GPU with shader model 6.6; mesh shaders required for the world path.
-hardware support is not a compatibility guarantee.
+**Host:** Windows x64 with MSVC build tools. The workspace pins [Rust 1.100.0](rust-toolchain.toml). Ordinary source and synthetic tests do not require proprietary game data.
 
 ```powershell
-cargo xtask install-hooks
-cargo test --locked --release --workspace -- --test-threads=1
-cargo build --locked --release -p victory
-target\release\victory.exe --version
-target\release\victory.exe --help
+git clone https://github.com/redcubessockers/NEPTUNE.git
+cd NEPTUNE
+
+# Source policy and reproducible tests
 cargo xtask policy
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --locked --exclude victory-gpu
+cargo test -p victory-gpu --locked -- --test-threads=1
+
+# Native CLI (the inherited executable name)
+cargo build --release --locked -p victory
+.\target\release\victory.exe --help
 ```
 
-add `--offline` to Cargo build and test commands when all dependencies are
-already cached. ordinary synthetic tests do not require game files. ignored
-tests are not passes; run the appropriate physical fixture separately.
+Ignored tests must be selected explicitly and run under their documented native/physical preconditions. Use the [example configuration](victory.example.toml), keep game files and generated data outside the repository, and never use untrusted executables as if this were a security sandbox.
 
-For architecture and configuration see [architecture](docs/architecture.md)
-and [example configuration](victory.example.toml).
-Keep title files, cache and data outside the repository. the runtime is not
-a security sandbox. do not execute untrusted images or use irreplaceable
-original data as writable test input. use only files you are entitled to use.
+For the R54–R61 **review branch only**, `tests/physical-d3d12.ps1` records isolated hardware fixtures and `tests/r52-unwind-gate.ps1` defines an additional R52 validation harness. Neither script's existence means its entire gate passed on every machine.
 
-## engineering rules
+## Hardware-aware, not instruction-aware
 
-- fence completion before reclamation or descriptor publication
-- bounded queues and explicit resource ownership
-- actual native execution before a runtime claim
-- scalar parity before ISA specialization; measure setup cost too
-- no claimed speedup without paired measurements and raw samples
-- preserve the known-good artifact and the rollback path
-- no release label until rendering, gameplay, frame pacing and stability
-  have been tested on hardware
+`REP MOVSB`, `REP STOSB`, `AVX2`, `BMI2`, `POPCNT`, non-temporal stores, prefetch and TSC timing are candidates, not accomplishments. Each experiment must establish CPU feature detection, scalar fallback, alignment, real workload, raw samples and measured regression tails.
 
-R36 descriptor lifetime; R37 completion and retirement; R38 asynchronous
-preparation; R39 SIMD; R40 build optimization; R41 integrated runtime.
-A roadmap entry is not a completed feature.
+A fast synthetic detile loop may improve a kernel and still worsen frame pacing. Only paired physical gameplay traces with a known-good baseline may support a frame-time performance claim.
 
-## origin and license
+## The release wall
 
-NEPTUNE builds on [VIctory](https://github.com/Marvisak/VIctory) by Marvisak
-and contributors, and the prior VIctory fork work. It is independent of
-the original game's developers and publisher.
+| Gate | Current disposition |
+| --- | --- |
+| Review-branch source CI | **PASS** on R61 PR commit `5fd1866f`; not inherited by this branch |
+| R50 protected executable | **PROTECTED** — preserve existing SHA-256 and rollback |
+| R52 corrected runner / integrated diagnostics | **BLOCKED** until native replay and full safety tests |
+| Resource lifetime and render parity on title | **NOT VERIFIED** |
+| Actual gameplay / stability / 1% and 0.1% low | **NOT TESTED** |
+| License provenance and distribution rights | **UNRESOLVED** |
+| Production merge or playable binary release | **BLOCKED** |
 
-Preserved attribution from the inherited README:
+R50 native checkpoint hash recorded by prior machine verification:
 
-- [VIctory](https://github.com/Marvisak/VIctory): loader, platform services,
-  D3D12 backend, shader recompiler; GPL-3.0-or-later.
-- [XCL](https://github.com/ivall/xcl): reference implementation, GPL-2.0-only;
-  the inherited README describes its inspired fixes as written anew.
-- myokex, [victory-amd](https://github.com/myokex/victory-amd) commit
-  `c6dc4d8`, with contributions by Spexivus, joroyt and tightfall:
-  memory-view guards; Joshua Odom, commit `10ea38e`: read-beside fix.
-- inherited fork changes were developed with Claude Code, as recorded by
-  the original author.
+`fc3c8f9be91bc81140c60ed1023698fb21843947997dbd1e0471b86e3b119f0a`
 
-The [inherited README at R39C](https://github.com/redcubessockers/NEPTUNE/blob/7ed56c1f27d7f2237c2cc37f7ac810d574278a1c/README.md)
-preserves the full credits, historical measurements and upstream notes.
-Those measurements are not NEPTUNE results.
+R62 branding and documentation changes live on a **separate review branch**. They do not touch the local R50 checkpoint, GAME or the production source. Rollback is to discard this review branch; no deployment or forced file replacement is part of this work.
 
-The repository's [LICENSE](LICENSE) label is CC0-1.0. The inherited
-VIctory source and Cargo metadata still identify GPL-3.0-or-later.
-The label alone does not establish permission to relicense inherited
-code. CC0-only distribution of the full source is not established.
-Third-party components retain their own licenses. This repository is intended for source and
-synthetic tests, not distribution of game files or derived game assets.
-See [asset policy](docs/asset-policy.md), including its inherited BCPack
-table exception (not covered by the project license). An allowlist pass
-is not independent rights clearance.
+## Origin, rights and research
 
-No game downloads or executable game distributions are provided here.
+NEPTUNE builds on [VIctory](https://github.com/Marvisak/VIctory) by Marvisak and contributors. Related research includes [XCL](https://github.com/ivall/xcl) and the [victory-amd fork](https://github.com/myokex/victory-amd). It is not affiliated with the original title developer or publisher. Full upstream attributions and historical experiments remain in the [engineering journal](docs/ENGINEERING-JOURNAL.md).
+
+> [!WARNING]
+> The root [LICENSE](LICENSE) contains **CC0-1.0**, while inherited crate metadata declares **GPL-3.0-or-later**. The root label alone does not grant permission to relicense inherited code. The original BCPack tables have a separate rights exception. Publication clearance is **not established**.
+
+Do not commit any title-derived files, binary excerpts, code dumps, shaders, textures, images or screenshots. The only original graphic in this documentation is the static, repository-authored SVG. See [asset policy](docs/asset-policy.md).
+
+---
+
+<p align="center"><strong>UNDERSTAND THE MACHINE. CONTROL THE BOUNDARY. RECONSTRUCT THE BEHAVIOR. PROVE THE PORT.</strong></p>
+<p align="center"><code>NO GUESSWORK · NO FAKE COMPATIBILITY · NO FALSE PASS</code></p>
