@@ -207,17 +207,28 @@ fn fit(parent: HWND, x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32,
 /// `width` x `height` scaled down to fit `area`, or unchanged if it fits
 /// (or is `CW_USEDEFAULT`).
 fn fit_into(area: &RECT, width: i32, height: i32) -> (i32, i32) {
-    let (aw, ah) = (area.right - area.left, area.bottom - area.top);
-    if width <= 0 || height <= 0 || aw <= 0 || ah <= 0 || (width <= aw && height <= ah) {
+    // RECT coordinates are signed 32-bit; their *span* can require 33 bits.
+    let (aw, ah) = (
+        i64::from(area.right) - i64::from(area.left),
+        i64::from(area.bottom) - i64::from(area.top),
+    );
+    if width <= 0
+        || height <= 0
+        || aw <= 0
+        || ah <= 0
+        || (i64::from(width) <= aw && i64::from(height) <= ah)
+    {
         return (width, height);
     }
+    // Both spans fit exactly in f64 (at most 2^32-1).
     let scale = f64::min(
-        f64::from(aw) / f64::from(width),
-        f64::from(ah) / f64::from(height),
+        aw as f64 / f64::from(width),
+        ah as f64 / f64::from(height),
     );
+    // A positive render target must not turn into a zero-sized Win32 HWND.
     (
-        (f64::from(width) * scale) as i32,
-        (f64::from(height) * scale) as i32,
+        (f64::from(width) * scale).max(1.0) as i32,
+        (f64::from(height) * scale).max(1.0) as i32,
     )
 }
 
