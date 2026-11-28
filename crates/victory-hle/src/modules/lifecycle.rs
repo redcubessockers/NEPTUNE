@@ -500,8 +500,8 @@ mod tests {
     fn subclass_during_create_must_keep_lifecycle_interception() {
         use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
-        const CLASS: &[u8] = b"neptune.r67.subclass\\0";
-        const NAME: &[u8] = b"r67\\0";
+        const CLASS: &[u8] = b"neptune.r67.subclass\0";
+        const NAME: &[u8] = b"r67\0";
         let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
         let class = WindowClassExA {
             cb_size: std::mem::size_of::<WindowClassExA>() as u32,
