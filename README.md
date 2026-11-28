@@ -7,8 +7,6 @@
 
 <p align="center"><strong>NATIVE X86-64 · WINDOWS · D3D12 · SHADER RECONSTRUCTION</strong></p>
 <p align="center"><code>THE BLACK SHEEP OF PC PORT ENGINEERING</code></p>
-<p align="center"><sub>NO WEBSITE JS · <a href="docs/assets/neptune-logo.svg">STATIC SVG</a> · <a href="docs/assets/neptune-logo-motion.md">MOTION SPEC</a></sub></p>
-
 <p align="center">
   <a href="#machine-path">MACHINE PATH</a> ·
   <a href="#code-map">SOURCE MAP</a> ·
@@ -32,7 +30,7 @@ EXECUTION       native title x86-64 instructions
 TRANSLATION     console ABI + D3D12.X + GFX10 shaders
 GPU BACKEND     host D3D12
 PRODUCTION      protected R50 checkpoint; not a public release
-REVIEW          R54-R61 draft PR #2; isolated and not merged
+REVIEW          R54-R65 PR #2; R66 shutdown PR #4 (both drafts)
 R52             BLOCKED / full safety integration not verified
 TITLE           NOT VERIFIED as fully playable
 PERFORMANCE     UNKNOWN / no validated game FPS advantage
@@ -95,14 +93,14 @@ The lanes below refer to **different artifacts**. They are not a cumulative pass
 | Native PE entry | older R41 synthetic PE32+ fixtures entered native code and returned distinct values | **HISTORICAL FIXTURE PASS** |
 | Physical D3D12 fixtures | R58 review-branch tests on RTX 4060, adapter `10de:2882`, with explicit GPU readback | **SCOPED HARDWARE PASS** |
 | R54 worker lifecycle | native RED/GREEN witness retains join failure after a panicking worker | **SCOPED NATIVE PASS** |
-| R61 Windows CI | strict Clippy, diagnostics, isolated worker and workspace/GPU test steps on PR head `5fd1866f` | **PASS ON THAT COMMIT** |
+| R65 Windows CI | strict Clippy, diagnostics, worker, workspace/GPU tests; PR #2 head `b9af2df1`, run #28 | **688 PASS / 0 FAIL / 41 IGNORED** |
 | R52 stack unwind | installed RPCRT4 bytes and native bounded-unwind counterexamples recorded | **WITNESS VERIFIED / INTEGRATION BLOCKED** |
-| R52 corrected safety runner | published for review, but fresh host staging encountered `c0000043` | **NOT TESTED** |
+| R52 native safety runner | R65 corrected physical D3D12 verifier, targeted/unwind/diagnostics and workspace; signed receipts, R50 parity | **SCOPED PASS / TITLE INTEGRATION BLOCKED** |
 | Actual title world rendering | historical user session reported incomplete rendering | **NOT VERIFIED** |
 | Real gameplay, frame-time A/B, long session | no complete current release-bound proof | **NOT TESTED** |
 | Vulkan backend / universal GPU support | no implementation or multi-vendor parity established | **UNKNOWN / NOT CLAIMED** |
 
-**Exact evidence:** [R54–R61 review PR #2](https://github.com/redcubessockers/NEPTUNE/pull/2) · [Windows CI run 46137964800](https://github.com/redcubessockers/NEPTUNE/actions/runs/46137964800) · [historical engineering journal](docs/ENGINEERING-JOURNAL.md).
+**Exact evidence:** [R65 signed native/GPU evidence](https://github.com/redcubessockers/NEPTUNE/blob/work/r54-worker-panic-join/docs/R65-R52-NATIVE-EVIDENCE.md) · [Windows CI run #28](https://github.com/redcubessockers/NEPTUNE/actions/runs/46144253077) · [R66 shutdown candidate](https://github.com/redcubessockers/NEPTUNE/pull/4).
 
 > [!IMPORTANT]
 > GitHub-hosted Windows CI is **not** a physical RTX 4060 test. A physical-GPU fixture is **not** an actual title session. A past benchmark is **not** evidence of current HEAD performance.
@@ -145,7 +143,7 @@ cargo build --release --locked -p victory
 
 Ignored tests must be selected explicitly and run under their documented native/physical preconditions. Use the [example configuration](victory.example.toml), keep game files and generated data outside the repository, and never use untrusted executables as if this were a security sandbox.
 
-For the R54–R61 **review branch only**, `tests/physical-d3d12.ps1` records isolated hardware fixtures and `tests/r52-unwind-gate.ps1` defines an additional R52 validation harness. Neither script's existence means its entire gate passed on every machine.
+For the R54–R65 **review branch only**, `tests/physical-d3d12.ps1` records isolated hardware fixtures and `tests/r52-unwind-gate.ps1` defines an additional R52 validation harness. Neither script's existence means its entire gate passed on every machine.
 
 ## Hardware-aware, not instruction-aware
 
@@ -157,9 +155,9 @@ A fast synthetic detile loop may improve a kernel and still worsen frame pacing.
 
 | Gate | Current disposition |
 | --- | --- |
-| Review-branch source CI | **PASS** on R61 PR commit `5fd1866f`; not inherited by this branch |
+| Review-branch source CI | **PASS** on R65 commit `b9af2df1`; separate R66 and README branches require their own CI |
 | R50 protected executable | **PROTECTED** — preserve existing SHA-256 and rollback |
-| R52 corrected runner / integrated diagnostics | **BLOCKED** until native replay and full safety tests |
+| R52 corrected runner / isolated native diagnostics | **SCOPED PASS** on signed R65 replay; integrated title safety still **BLOCKED** |
 | Resource lifetime and render parity on title | **NOT VERIFIED** |
 | Actual gameplay / stability / 1% and 0.1% low | **NOT TESTED** |
 | License provenance and distribution rights | **UNRESOLVED** |
