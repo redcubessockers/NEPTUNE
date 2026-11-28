@@ -279,7 +279,7 @@ pub(crate) fn draw(host: &crate::host::Host, list: &ID3D12GraphicsCommandList, b
     // 2160 lines, 3 at 1080.
     let scale = (height / 360).clamp(2, 12);
     let stats = (mode == Mode::All).then(|| {
-        crate::stats::start();
+        crate::stats::start(&host.device);
         crate::stats::now()
     });
     let look = stats.flatten();
