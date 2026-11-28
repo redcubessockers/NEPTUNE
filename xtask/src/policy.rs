@@ -282,6 +282,27 @@ mod tests {
     }
 
     #[test]
+    fn owned_neptune_svg_is_scoped_and_data_free() {
+        let logo = b"<svg xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0h1v1z\"/></svg>\n";
+        assert!(check("docs/assets/neptune-logo.svg", logo).is_empty());
+        assert!(!check("docs/assets/unrelated.svg", logo).is_empty());
+        assert!(!check("assets/another.svg", logo).is_empty());
+        assert!(!check("docs/assets/neptune-logo.png", b"not a png").is_empty());
+        assert!(!check("docs/assets/neptune-logo.svg", b"wrong").is_empty());
+        assert!(!check("docs/assets/neptune-logo.svg", b"<svg>\0</svg>\n").is_empty());
+        assert!(!check(
+            "docs/assets/neptune-logo.svg",
+            b"<svg><script>alert(1)</script></svg>\n"
+        ).is_empty());
+        assert!(!check(
+            "docs/assets/neptune-logo.svg",
+            b"<svg><image href=\"https://example.com/a\"/></svg>\n"
+        ).is_empty());
+        let hidden_data = format!("<svg>{}</svg>\n", "A1".repeat(400));
+        assert!(!check("docs/assets/neptune-logo.svg", hidden_data.as_bytes()).is_empty());
+    }
+
+    #[test]
     fn rejects_data_smuggled_into_text() {
         let blob = format!("const DATA: &str = \"{}\";", "A1".repeat(400));
         assert!(!check("src/blob.rs", blob.as_bytes()).is_empty());
