@@ -243,8 +243,14 @@ fn hook(hwnd: HWND, ansi: bool) {
             .any(|entry| entry.0 == atom);
         let title = wm::GetWindowLongPtrW(hwnd, wm::GWLP_WNDPROC);
         if registered {
-            let class_proc = wm::GetClassLongPtrW(hwnd, wm::GCLP_WNDPROC) as isize;
-            if title != 0 && class_proc != 0 && title == class_proc {
+            // The class was registered with RegisterClassExA. W accessors
+            // may synthesize a callback thunk for an ANSI window, even
+            // when its instance procedure is unchanged. Compare *both*
+            // addresses in the original ANSI domain before deciding to
+            // skip instance subclassing.
+            let class_proc = wm::GetClassLongPtrA(hwnd, wm::GCLP_WNDPROC) as isize;
+            let instance_proc = wm::GetWindowLongPtrA(hwnd, wm::GWLP_WNDPROC);
+            if instance_proc != 0 && class_proc != 0 && instance_proc == class_proc {
                 return;
             }
         }
