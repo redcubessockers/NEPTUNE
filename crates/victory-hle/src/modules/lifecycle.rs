@@ -617,6 +617,21 @@ mod tests {
             small_icon: std::ptr::null_mut(),
         };
         assert_ne!(RegisterClassExA(&class), 0);
+        // Control: the same registered class must create through user32
+        // before attributing any failure to our CreateWindowExA import.
+        let native = unsafe {
+            wm::CreateWindowExA(
+                0, CLASS.as_ptr(), TITLE.as_ptr(), 0, 0, 0, 10, 10,
+                std::ptr::null_mut(), std::ptr::null_mut(), instance,
+                std::ptr::null(),
+            )
+        };
+        assert!(
+            !native.is_null(),
+            "direct user32 CreateWindowExA failed, last_error={}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        );
+        unsafe { wm::DestroyWindow(native); }
         // Both imports are deliberately routed through the HLE wrappers.
         // The original title procedure must remain intact as a property.
         let hwnd = CreateWindowExA(
