@@ -161,32 +161,65 @@ struct Engines {
     buffer: Vec<u64>,
 }
 
-/// One figure of [`Engines`]: the process, the engine's kind ("3D", "Copy",
-/// "Compute_0", ...) and its per cent.
+/// Identity of one physical GPU engine, independent of which process used it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct EngineKey {
+    luid_high: u32,
+    luid_low: u32,
+    phys: u32,
+    engine: u32,
+}
+
+/// One PDH process/engine sample.
 #[derive(Debug, PartialEq)]
 struct Engine {
     pid: u32,
+    key: EngineKey,
     kind: String,
     percent: f64,
 }
 
-/// What an instance name of the counters says: the process and the kind of
-/// engine ("pid_1234_luid_0x0_0x1_phys_0_eng_3_engtype_3D").
-fn parse_instance(name: &str) -> Option<(u32, &str)> {
-    let rest = name.strip_prefix("pid_")?;
-    let pid = rest.split('_').next()?.parse().ok()?;
-    let kind = name.split("engtype_").nth(1)?;
-    Some((pid, kind))
+/// Exact fields in a Windows GPU Engine counter instance. Never infer an
+/// engine's identity from its type: one adapter can have many Copy engines.
+fn parse_instance(name: &str) -> Option<(u32, EngineKey, &str)> {
+    let (pid, rest) = name.strip_prefix("pid_")?.split_once("_luid_")?;
+    let (high, rest) = rest.split_once('_')?;
+    let (low, rest) = rest.split_once("_phys_")?;
+    let (phys, rest) = rest.split_once("_eng_")?;
+    let (engine, kind) = rest.split_once("_engtype_")?;
+    if kind.is_empty() {
+        return None;
+    }
+    let hex = |word: &str| u32::from_str_radix(word.strip_prefix("0x")?, 16).ok();
+    Some((
+        pid.parse().ok()?,
+        EngineKey {
+            luid_high: hex(high)?,
+            luid_low: hex(low)?,
+            phys: phys.parse().ok()?,
+            engine: engine.parse().ok()?,
+        },
+        kind,
+    ))
 }
 
-/// The busiest kind of engine: every kind's figures summed, the highest
-/// sum, 100 at most. For the whole card (`pid` none) or one process.
+/// Sum per-process utilization only for the SAME physical engine. Report
+/// the busiest engine per type across adapters; never sum different engines.
 fn busiest(engines: &[Engine], pid: Option<u32>) -> (f32, HashMap<&str, f64>) {
-    let mut by_kind: HashMap<&str, f64> = HashMap::new();
-    for e in engines.iter().filter(|e| pid.is_none_or(|p| p == e.pid)) {
-        *by_kind.entry(e.kind.as_str()).or_default() += e.percent;
+    let mut by_engine: HashMap<EngineKey, (f64, &str)> = HashMap::new();
+    for e in engines.iter().filter(|e| {
+        pid.is_none_or(|p| p == e.pid) && e.percent.is_finite() && e.percent >= 0.0
+    }) {
+        let entry = by_engine.entry(e.key).or_insert((0.0, e.kind.as_str()));
+        entry.0 += e.percent;
     }
-    let top = by_kind.values().copied().fold(0.0, f64::max).min(100.0);
+    let mut by_kind: HashMap<&str, f64> = HashMap::new();
+    for (_, (percent, kind)) in by_engine {
+        let load = percent.min(100.0);
+        let top = by_kind.entry(kind).or_insert(0.0);
+        *top = (*top).max(load);
+    }
+    let top = by_kind.values().copied().fold(0.0, f64::max);
     (top as f32, by_kind)
 }
 
@@ -248,8 +281,8 @@ impl Engines {
                 }
                 let len = (0..512).take_while(|&i| *item.szName.add(i) != 0).count();
                 let name = String::from_utf16_lossy(std::slice::from_raw_parts(item.szName, len));
-                if let Some((pid, kind)) = parse_instance(&name) {
-                    out.push(Engine { pid, kind: kind.to_owned(), percent: item.FmtValue.Anonymous.doubleValue });
+                if let Some((pid, key, kind)) = parse_instance(&name) {
+                    out.push(Engine { pid, key, kind: kind.to_owned(), percent: item.FmtValue.Anonymous.doubleValue });
                 }
             }
             Some(out)
@@ -379,23 +412,60 @@ mod tests {
 
     #[test]
     fn an_instance_name_says_the_process_and_the_engine() {
-        assert_eq!(parse_instance("pid_1234_luid_0x00000000_0x0000E3B5_phys_0_eng_0_engtype_3D"), Some((1234, "3D")));
-        assert_eq!(parse_instance("pid_8_luid_0x0_0x1_phys_0_eng_5_engtype_Compute_0"), Some((8, "Compute_0")));
+        let first = EngineKey { luid_high: 0, luid_low: 0xe3b5, phys: 0, engine: 0 };
+        let second = EngineKey { luid_high: 0, luid_low: 1, phys: 0, engine: 5 };
+        assert_eq!(parse_instance("pid_1234_luid_0x00000000_0x0000E3B5_phys_0_eng_0_engtype_3D"), Some((1234, first, "3D")));
+        assert_eq!(parse_instance("pid_8_luid_0x0_0x1_phys_0_eng_5_engtype_Compute_0"), Some((8, second, "Compute_0")));
         assert_eq!(parse_instance("_Total"), None);
         assert_eq!(parse_instance("pid_x_engtype_3D"), None);
     }
 
     #[test]
     fn the_cards_load_is_its_busiest_kind_of_engine() {
-        let e = |pid, kind: &str, percent| Engine { pid, kind: kind.to_owned(), percent };
-        let engines = [e(1, "3D", 30.0), e(2, "3D", 25.0), e(1, "Copy", 40.0), e(2, "VideoEncode", 70.0), e(1, "3D", 5.0)];
-        // All programs: 3D 60, Copy 40, VideoEncode 70.
+        let e = |pid, engine, kind: &str, percent| Engine {
+            pid, key: EngineKey { luid_high: 0, luid_low: 1, phys: 0, engine },
+            kind: kind.to_owned(), percent,
+        };
+        let engines = [
+            e(1, 0, "3D", 30.0), e(2, 0, "3D", 25.0),
+            e(1, 1, "Copy", 40.0), e(2, 2, "VideoEncode", 70.0),
+            e(1, 0, "3D", 5.0),
+        ];
+        // Same physical 3D engine: 30 + 25 + 5 = 60.
         assert_eq!(busiest(&engines, None).0, 70.0);
-        // Process 1: 3D 35, Copy 40.
+        // Process 1 on the 3D engine: 30 + 5 = 35; Copy = 40.
         assert_eq!(busiest(&engines, Some(1)).0, 40.0);
         assert_eq!(busiest(&engines, Some(9)).0, 0.0);
-        // Sums over 100 (several engines of a kind) show as 100.
-        assert_eq!(busiest(&[e(1, "3D", 80.0), e(1, "3D", 60.0)], None).0, 100.0);
+        // Saturation is per physical engine, not per type.
+        assert_eq!(busiest(&[e(1, 0, "3D", 80.0), e(2, 0, "3D", 60.0)], None).0, 100.0);
+    }
+
+    #[test]
+    fn copy_engines_and_adapters_are_not_falsely_summed() {
+        let e = |pid, adapter, engine, percent| Engine {
+            pid, key: EngineKey { luid_high: 0, luid_low: adapter, phys: 0, engine },
+            kind: "Copy".into(), percent,
+        };
+        let samples = [
+            e(1, 1, 3, 75.0), e(2, 1, 3, 10.0), // same engine: 85
+            e(1, 1, 10, 65.0), // different engine, same type
+            e(3, 2, 3, 60.0), // different GPU, same engine number
+        ];
+        let (all, kinds) = busiest(&samples, None);
+        assert_eq!(all, 85.0, "physical-engine load must not sum across engines");
+        assert_eq!(kinds["Copy"], 85.0);
+        assert_eq!(busiest(&samples, Some(1)).0, 75.0);
+        assert_eq!(busiest(&samples, Some(2)).0, 10.0);
+    }
+
+    #[test]
+    fn invalid_gpu_utilization_is_not_counted() {
+        let e = |percent| Engine {
+            pid: 1, key: EngineKey { luid_high: 0, luid_low: 1, phys: 0, engine: 0 },
+            kind: "3D".into(), percent,
+        };
+        assert_eq!(busiest(&[e(f64::NAN), e(f64::INFINITY), e(-3.0)], None).0, 0.0);
+        assert_eq!(busiest(&[e(70.0), e(f64::NAN)], None).0, 70.0);
     }
 
     /// The looks that need no card: they answer on any machine.
