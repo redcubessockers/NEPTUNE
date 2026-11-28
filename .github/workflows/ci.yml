@@ -43,6 +43,10 @@ jobs:
       # The panicking worker test owns process-global state. Run it alone.
       - name: Heap worker panic join (isolated)
         run: cargo test -p victory-gpu --locked heap_worker::tests::neptune_worker_join_failure_remains_failure -- --ignored --exact --nocapture --test-threads=1
+      # R74: execute the native PDH lifetime tests that are intentionally
+      # ignored by default. The Windows runner owns these short-lived queries.
+      - name: R74 PDH query lifecycle on native Windows
+        run: cargo test -p victory-gpu --lib --locked stats::tests::pdh_query_is_closed_when_ -- --ignored --nocapture --test-threads=1
       # Includes xtask's repository_passes_policy, the asset-policy check.
       - name: Tests
         run: cargo test --workspace --locked --exclude victory-gpu
