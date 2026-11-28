@@ -1,7 +1,7 @@
 # R74 — PDH query lifetime and ownership
 
 **Scope**: `crates/victory-gpu/src/stats.rs` and one Windows-only CI step.  
-**State**: RED reproduced on target Windows; GREEN not yet verified.  
+**State**: RED reproduced on target Windows; GREEN verified on the GitHub Windows runner; target-hardware GREEN blocked.  
 **Safety gate**: R52 BLOCKED. Draft only, no production merge.
 
 ## Defect and independent contract
@@ -38,12 +38,9 @@ Script SHA-256: `f234aac2fdd95cd913550118db64c18fdecd3876882ca0b3d684b0e332eed56
 Execution receipt: `e1424b5d090f4a4133d8397d`  
 Receipt SHA-256: `6569f0450409a3548b85c9f7086098831b7db27a829058e95d694c776dea8d2f`  
 Signature verification: true.  
-Failed-registration stdout SHA-256:
-`90db4954e6c6b19935b2ef7f3a853711bfef5a2bd8b45ae76efd52aad2d0923c`  
-Owner-drop stdout SHA-256:
-`205b1fc60ac5ea5e6a9b6120bdb116be8b65eb793e135a2d6ee88e8450965c5a`.
+Individual RED stdout hashes are not independently verified here and are omitted.
 
-## Candidate GREEN — not yet verified
+## Candidate GREEN — Windows CI verified
 
 Implementation commit: `5813dc8e450b235faa7aef14006cd4d55718d068`.
 
@@ -55,16 +52,24 @@ Implementation commit: `5813dc8e450b235faa7aef14006cd4d55718d068`.
 
 Workflow commit: `013c62a82ed9b63d315910c29fdd16d5d240f491`.
 The existing `windows-latest` job now explicitly runs both
-previously ignored lifetime regressions. A workflow success would prove
-only the CI runner's Windows native path, not the user's hardware.
+previously ignored lifetime regressions. [CI run 46160105205](https://github.com/redcubessockers/NEPTUNE/actions/runs/46160105205), job `141025325581`, tested commit `e9c66f41a54a3c3c4c2e06fe13dd9aa77156c059` and completed successfully.
+
+Observed native Windows stdout:
+
+```text
+R74_PDH_FAILED_REGISTRATION opens=1 closes=1 close_status=0x00000000
+R74_PDH_OWNER_DROP opens=1 closes=1 close_status=0x00000000
+test result: ok. 2 passed; 0 failed; 0 ignored
+```
+
+Clippy (default and all features), workspace regression, and serialized GPU tests passed. The latter recorded 263 passed, 0 failed, 32 ignored. The R52 runner syntax check is not execution of the R52 gate. CI is not the target RTX 4060 or actual gameplay.
 
 ## Gate and remaining risks
 
 The DEADBYTE coding lease reported `armed=false`,
 `reason=epoch-revoked` after the source implementation. Its permitted
 status was verified again; no alternative host command path was used.
-Therefore **R74 GREEN, Debug, Release, Clippy, native target witness,
-new post-change R50 hash, and full title execution are NOT TESTED**.
+Therefore **target-machine R74 GREEN, target Debug/Release, target strict Clippy, physical GPU witness, new post-change R50 hash, and full title execution are NOT TESTED**. The prior RED receipt signature was reverified; this does not independently verify individual stream contents.
 
 The last R74 RED run pinned the protected R50 executable to
 SHA-256 `fc3c8f9be91bc81140c60ed1023698fb21843947997dbd1e0471b86e3b119f0a`.
