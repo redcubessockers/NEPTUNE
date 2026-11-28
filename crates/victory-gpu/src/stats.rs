@@ -356,6 +356,28 @@ mod tests {
     }
 
     #[test]
+    fn distinct_gpu_engines_keep_distinct_instance_identity() {
+        let a = parse_instance("pid_7_luid_0x00000000_0x00000001_phys_0_eng_3_engtype_copy");
+        let b = parse_instance("pid_7_luid_0x00000000_0x00000001_phys_0_eng_10_engtype_copy");
+        assert!(a.is_some() && b.is_some());
+        assert_ne!(a, b, "different physical engines must not alias by engine type");
+    }
+
+    #[test]
+    fn distinct_gpu_adapters_keep_distinct_instance_identity() {
+        let a = parse_instance("pid_7_luid_0x00000000_0x00000001_phys_0_eng_3_engtype_copy");
+        let b = parse_instance("pid_7_luid_0x00000000_0x00000002_phys_0_eng_3_engtype_copy");
+        assert!(a.is_some() && b.is_some());
+        assert_ne!(a, b, "different adapter LUIDs must not alias");
+    }
+
+    #[test]
+    fn malformed_gpu_instance_is_not_counted() {
+        assert!(parse_instance("pid_7_engtype_copy").is_none());
+        assert!(parse_instance("pid_7_luid_0x00000000_0x00000001_phys_0_eng_3_engtype_").is_none());
+    }
+
+    #[test]
     fn an_instance_name_says_the_process_and_the_engine() {
         assert_eq!(parse_instance("pid_1234_luid_0x00000000_0x0000E3B5_phys_0_eng_0_engtype_3D"), Some((1234, "3D")));
         assert_eq!(parse_instance("pid_8_luid_0x0_0x1_phys_0_eng_5_engtype_Compute_0"), Some((8, "Compute_0")));
