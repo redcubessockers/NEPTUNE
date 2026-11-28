@@ -19,7 +19,11 @@ $protected=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $ProtectedR50).Path
 $out=[IO.Path]::GetFullPath($OutputRoot)
 $target=[IO.Path]::GetFullPath($TargetRoot)
 $prefix=$src.TrimEnd([char]'\',[char]'/')+'\'
+$temp=[IO.Path]::GetFullPath($env:TEMP).TrimEnd([char]'\',[char]'/')+'\'
 foreach($path in @($out,$target)) {
+    if(!$path.StartsWith($temp,[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'DESTINATION_OUTSIDE_TEMP'
+    }
     if($path -eq $src -or $path.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) {
         throw 'DESTINATION_INSIDE_SOURCE'
     }
@@ -77,7 +81,9 @@ foreach($case in $cases){
     Write-Output ('R61_BEGIN='+$case.Id+' ARGV='+($argv -join ' '))
     $p=Start-Process -FilePath $cargo -ArgumentList $argv -WorkingDirectory $src -Wait -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     $text=[IO.File]::ReadAllText($stdout)
-    $results=@([regex]::Matches($text,'test result: ok\. [0-9]+ passed; 0 failed; [0-9]+ ignored'))
+    $results=[regex]::Matches($text,'test result: ok\. ([0-9]+) passed; 0 failed; ([0-9]+) ignored')
+    $passed=0
+    foreach($m in $results){$passed += [int]$m.Groups[1].Value}
     if($case.Name -ne ''){
         $name=[regex]::Escape($case.Name)
         $ok=($results.Count -eq 1 -and
@@ -86,10 +92,15 @@ foreach($case in $cases){
         if($case.Id -eq 'stress'){$ok=$ok -and $text.Contains('60000 walks')}
         if($case.Id -eq 'gpu-prefix'){$ok=$ok -and $text.Contains('ADAPTER=10de:2882') -and $text.Contains('MISMATCHES=0')}
     }
-    else {$ok=($results.Count -ge 1 -and !$text.Contains('test result: FAILED') -and $text.Contains('test result: ok. '))}
+    else {$ok=($results.Count -ge 1 -and $passed -gt 0 -and !$text.Contains('test result: FAILED') -and $text.Contains('test result: ok. '))}
     $hashout=(Get-FileHash -LiteralPath $stdout -Algorithm SHA256).Hash.ToLowerInvariant()
     $hasherr=(Get-FileHash -LiteralPath $stderr -Algorithm SHA256).Hash.ToLowerInvariant()
-    Write-Output ('R61_RESULT='+$case.Id+' EXIT='+$p.ExitCode+' VALID='+$ok+' STDOUT='+$hashout+' STDERR='+$hasherr+' BLOCKS='+$results.Count)
+    Write-Output ('R61_RESULT='+$case.Id+' EXIT='+$p.ExitCode+' VALID='+$ok+' STDOUT='+$hashout+' STDERR='+$hasherr+' BLOCKS='+$results.Count+' PASSED='+$passed)
+    foreach($pair in @(@($protected,$ExpectedR50),@($profile,$ExpectedProfile),@($tests,$ExpectedTests))) {
+        if((Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $pair[1].ToLowerInvariant()){
+            throw ('POSTIMAGE_DRIFT '+$pair[0])
+        }
+    }
     if($p.ExitCode -ne 0 -or !$ok){throw ('R61_CASE_FAILED '+$case.Id)}
     $complete++
 }
