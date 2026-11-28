@@ -55,3 +55,10 @@ jobs:
       # d3d10warp) when several tests used it at once. One test at a time has not shown it.
       - name: Tests, victory-gpu (one at a time)
         run: cargo test -p victory-gpu --locked -- --test-threads=1
+      # R75: run the actual Release CLI on self-authored PE32+ input.
+      - name: R75 native Release CLI witness
+        shell: powershell
+        run: |
+          cargo build --release --locked -p victory
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\tests\native-cli-smoke.ps1 -Runtime .\target\release\victory.exe
