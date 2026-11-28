@@ -192,7 +192,8 @@ fn busiest(engines: &[Engine], pid: Option<u32>) -> (f32, HashMap<&str, f64>) {
 
 // Keep the PDH per-instance status decision explicit for regression tests.
 fn counter_status_valid(status: u32) -> bool {
-    status == 0
+    // pdhmsg.h: VALID_DATA (0) and NEW_DATA (1) both carry valid values.
+    matches!(status, 0 | 1)
 }
 
 impl Engines {
