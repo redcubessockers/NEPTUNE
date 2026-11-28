@@ -229,21 +229,25 @@ fn hook(hwnd: HWND, ansi: bool) {
     // SAFETY: a window this thread just created. The title's procedure is
     // stored before ours can run.
     unsafe {
-        // A class WndProc installed by RegisterClassExA intercepts messages
-        // already. GetWindowLongPtrW may return an ANSI/Unicode thunk token
-        // (0xffff....), not the Rust function address. Subclassing it again
-        // would save that token as TITLE_PROC and dispatch back into our own
-        // window_proc_a indefinitely. Keep exactly one intercept layer.
+        // A registered class already intercepts messages only while an
+        // instance has not installed a new WndProc during WM_CREATE.
+        // Compare the host's class and instance WndProc *tokens* using the
+        // same W API: ANSI/Unicode thunk tokens are not Rust pointers.
+        // If they differ, wrap the instance procedure to preserve the
+        // title's late subclass without losing lifecycle interception.
         let atom = wm::GetClassLongPtrW(hwnd, wm::GCW_ATOM) as u16;
-        if CLASS_PROCS
+        let registered = CLASS_PROCS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .any(|entry| entry.0 == atom)
-        {
-            return;
-        }
+            .any(|entry| entry.0 == atom);
         let title = wm::GetWindowLongPtrW(hwnd, wm::GWLP_WNDPROC);
+        if registered {
+            let class_proc = wm::GetClassLongPtrW(hwnd, wm::GCLP_WNDPROC);
+            if title != 0 && class_proc != 0 && title == class_proc {
+                return;
+            }
+        }
         let ours = if ansi { window_proc_a } else { window_proc_w } as *const () as isize;
         if title == ours {
             return;
