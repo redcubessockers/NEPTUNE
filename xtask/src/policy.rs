@@ -12,6 +12,8 @@ use anyhow::{Context, Result, bail};
 
 const MAX_FILE_SIZE: usize = 512 * 1024;
 const MAX_ENCODED_RUN: usize = 512;
+// The sole repository-owned graphic is text geometry, never extracted title art.
+const BRAND_LOGO_PATH: &str = "docs/assets/neptune-logo.svg";
 
 const ALLOWED_EXTENSIONS: &[&str] = &[
     "rs", "toml", "md", "txt", "lock", "yml", "yaml", "json", "hlsl", "hlsli", "ps1", "cmd", "sh",
@@ -195,12 +197,27 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
     }
     let name = path.rsplit('/').next().unwrap_or(path);
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-    let allowed = ALLOWED_NAMES.contains(&name)
+    let allowed = path == BRAND_LOGO_PATH
+        || ALLOWED_NAMES.contains(&name)
         || ext
             .as_deref()
             .is_some_and(|e| ALLOWED_EXTENSIONS.contains(&e));
     if !allowed {
         problems.push("file type not on the allowlist".to_owned());
+    }
+    if path == BRAND_LOGO_PATH {
+        let markup = String::from_utf8_lossy(content).to_ascii_lowercase();
+        let forbidden = [
+            "<script", "<image", "<foreignobject", "<iframe", "<animate", "<set",
+            "<style", "href=", "url(", "data:", "<!doctype", "<?", "onload=",
+            "onbegin=", "javascript:", "@import",
+        ];
+        if !markup.starts_with("<svg ")
+            || !markup.trim_end().ends_with("</svg>")
+            || forbidden.iter().any(|token| markup.contains(token))
+        {
+            problems.push("branding SVG must contain only self-contained static geometry".to_owned());
+        }
     }
     if content.len() > MAX_FILE_SIZE {
         problems.push(format!(
