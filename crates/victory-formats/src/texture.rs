@@ -797,11 +797,11 @@ impl Layout {
                     match chunk_size {
                         Some(8) if tiled_row.is_multiple_of(8) => {
                             #[cfg(target_arch = "x86_64")]
-                            if let Some(plan) = &gather {
-                                if plan.copy_row(src, dst, body, tiled_row, linear_row) {
-                                    copy_runs::<0, DETILE>(src, dst, last, tiled_row, linear_row);
-                                    continue;
-                                }
+                            if let Some(plan) = &gather
+                                && plan.copy_row(src, dst, body, tiled_row, linear_row)
+                            {
+                                copy_runs::<0, DETILE>(src, dst, last, tiled_row, linear_row);
+                                continue;
                             }
                             copy_runs::<8, DETILE>(src, dst, body, tiled_row, linear_row)
                         }
