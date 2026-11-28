@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="300" viewBox="0 0 1280 300" role="img" aria-labelledby="n-title n-desc">
+<title id="n-title">NEPTUNE</title>
+<desc id="n-desc">Square-edged native compatibility runtime wordmark and circuit N emblem.</desc>
+<rect width="1280" height="300" fill="#0a1117"/>
+<rect x="16" y="16" width="1248" height="268" fill="none" stroke="#355665" stroke-width="2"/>
+<path d="M16 52H1264M16 249H1264" stroke="#294753" stroke-width="2"/>
+<path d="M38 36h7v7h-7zM52 36h7v7h-7zM66 36h7v7h-7z" fill="#5fced9"/>
+<path d="M1198 36h15v5h-15zM1218 36h15v5h-15zM1238 36h15v5h-15z" fill="#5fced9"/>
+<rect x="50" y="67" width="247" height="166" fill="#101f28" stroke="#335d69" stroke-width="2"/>
+<path d="M72 87h28v125H72zM189 87h28v125h-28z" fill="#5fced9"/>
+<path d="M100 87h24l65 90v35h-23L100 122z" fill="#dbe9ec"/>
+<path d="M62 101h10M62 125h10M62 149h10M62 173h10M62 197h10M217 101h22M217 125h22M217 149h22M217 173h22M217 197h22" stroke="#416e7a" stroke-width="4"/>
+<path d="M245 89h7v7h-7zM245 203h7v7h-7zM57 88h6v6h-6zM57 204h6v6h-6z" fill="#d0a95b"/>
+<text x="354" y="72" font-family="Consolas, 'Courier New', monospace" font-size="15" font-weight="bold" letter-spacing="3" fill="#73a9b6">X64 / NATIVE COMPATIBILITY RUNTIME</text>
+<path d="M354 83h14v14h-14z M426 83h14v14h-14z M354 101h14v14h-14z M372 101h14v14h-14z M426 101h14v14h-14z M354 119h14v14h-14z M390 119h14v14h-14z M426 119h14v14h-14z M354 137h14v14h-14z M408 137h14v14h-14z M426 137h14v14h-14z M354 155h14v14h-14z M426 155h14v14h-14z M354 173h14v14h-14z M426 173h14v14h-14z M354 191h14v14h-14z M426 191h14v14h-14z" fill="#5fced9"/>
+<path d="M474 83h14v14h-14z M492 83h14v14h-14z M510 83h14v14h-14z M528 83h14v14h-14z M546 83h14v14h-14z M474 101h14v14h-14z M474 119h14v14h-14z M474 137h14v14h-14z M492 137h14v14h-14z M510 137h14v14h-14z M528 137h14v14h-14z M474 155h14v14h-14z M474 173h14v14h-14z M474 191h14v14h-14z M492 191h14v14h-14z M510 191h14v14h-14z M528 191h14v14h-14z M546 191h14v14h-14z" fill="#e1ecef"/>
+<path d="M594 83h14v14h-14z M612 83h14v14h-14z M630 83h14v14h-14z M648 83h14v14h-14z M594 101h14v14h-14z M666 101h14v14h-14z M594 119h14v14h-14z M666 119h14v14h-14z M594 137h14v14h-14z M612 137h14v14h-14z M630 137h14v14h-14z M648 137h14v14h-14z M594 155h14v14h-14z M594 173h14v14h-14z M594 191h14v14h-14z" fill="#e1ecef"/>
+<path d="M714 83h14v14h-14z M732 83h14v14h-14z M750 83h14v14h-14z M768 83h14v14h-14z M786 83h14v14h-14z M750 101h14v14h-14z M750 119h14v14h-14z M750 137h14v14h-14z M750 155h14v14h-14z M750 173h14v14h-14z M750 191h14v14h-14z" fill="#e1ecef"/>
+<path d="M834 83h14v14h-14z M906 83h14v14h-14z M834 101h14v14h-14z M906 101h14v14h-14z M834 119h14v14h-14z M906 119h14v14h-14z M834 137h14v14h-14z M906 137h14v14h-14z M834 155h14v14h-14z M906 155h14v14h-14z M834 173h14v14h-14z M906 173h14v14h-14z M834 191h14v14h-14z M852 191h14v14h-14z M870 191h14v14h-14z M888 191h14v14h-14z M906 191h14v14h-14z" fill="#e1ecef"/>
+<path d="M954 83h14v14h-14z M1026 83h14v14h-14z M954 101h14v14h-14z M972 101h14v14h-14z M1026 101h14v14h-14z M954 119h14v14h-14z M990 119h14v14h-14z M1026 119h14v14h-14z M954 137h14v14h-14z M1008 137h14v14h-14z M1026 137h14v14h-14z M954 155h14v14h-14z M1026 155h14v14h-14z M954 173h14v14h-14z M1026 173h14v14h-14z M954 191h14v14h-14z M1026 191h14v14h-14z" fill="#e1ecef"/>
+<path d="M1074 83h14v14h-14z M1092 83h14v14h-14z M1110 83h14v14h-14z M1128 83h14v14h-14z M1146 83h14v14h-14z M1074 101h14v14h-14z M1074 119h14v14h-14z M1074 137h14v14h-14z M1092 137h14v14h-14z M1110 137h14v14h-14z M1128 137h14v14h-14z M1074 155h14v14h-14z M1074 173h14v14h-14z M1074 191h14v14h-14z M1092 191h14v14h-14z M1110 191h14v14h-14z M1128 191h14v14h-14z M1146 191h14v14h-14z" fill="#5fced9"/>
+<path d="M355 227H1170" stroke="#446e78" stroke-width="2"/>
+<text x="355" y="271" font-family="Consolas, 'Courier New', monospace" font-size="17" font-weight="bold" letter-spacing="2" fill="#e1ecef">UNDERSTAND THE MACHINE. PROVE THE PORT.</text>
+<path d="M1058 261h9v9h-9zM1075 261h9v9h-9zM1092 261h9v9h-9z" fill="#d0a95b"/>
+</svg>
