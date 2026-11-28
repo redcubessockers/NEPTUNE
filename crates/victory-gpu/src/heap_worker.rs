@@ -302,6 +302,8 @@ struct Job {
 
 static JOB: OnceLock<Job> = OnceLock::new();
 static THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+/// Never convert an observed worker panic into a later successful shutdown.
+static JOIN_FAILED: AtomicBool = AtomicBool::new(false);
 /// Held by whoever runs the pass.
 static PASS: Mutex<()> = Mutex::new(());
 /// Number of recording threads waiting for [`PASS`]. A successful waiter
@@ -468,9 +470,13 @@ fn shutdown_for(timeout: std::time::Duration) -> bool {
         None
     };
     let joined = loop {
-        let Some(thread) = handle.as_ref() else { break true };
+        let Some(thread) = handle.as_ref() else { break !JOIN_FAILED.load(Acquire) };
         if thread.is_finished() {
-            break handle.take().expect("finished worker").join().is_ok();
+            let joined = handle.take().expect("finished worker").join().is_ok();
+            if !joined {
+                JOIN_FAILED.store(true, Release);
+            }
+            break joined && !JOIN_FAILED.load(Acquire);
         }
         let remaining = timeout.saturating_sub(began.elapsed());
         if remaining.is_zero() { break false; }
@@ -558,6 +564,19 @@ mod tests {
         assert!(joined);
         assert!(!premature, "second shutdown claimed a still-running worker was joined");
         STOP.store(false, Release);
+    }
+
+    #[test]
+    #[ignore = "isolated process-global panicked worker; execute alone"]
+    fn neptune_worker_join_failure_remains_failure() {
+        assert!(lock(&THREAD).is_none());
+        STOP.store(false, Release);
+        *lock(&THREAD) = Some(thread::spawn(|| panic!("R54_EXPECTED_WORKER_PANIC")));
+        let first = shutdown_for(Duration::from_secs(1));
+        let second = shutdown_for(Duration::ZERO);
+        println!("R54_FIRST_JOIN={first} R54_SECOND_JOIN={second}");
+        assert!(!first, "panicked worker must not report a successful join");
+        assert!(!second, "R54_JOIN_FAILURE_BECAME_SUCCESS");
     }
 
     #[test]
