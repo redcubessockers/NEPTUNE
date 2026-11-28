@@ -1,9 +1,8 @@
-//! Rule #1, statically: the repository only ever contains small text files
-//! that we wrote. See docs/asset-policy.md.
+//! Rule #1: only permitted source text and one exact hash-pinned original GIF.
+//! See docs/asset-policy.md; inherited BCPack format data has its own exception.
 //!
-//! This is an allowlist, not a blocklist: a file passes only if its name is
-//! on the list, it is not too big, it is text, and it does not smuggle data
-//! inside text (long hex/base64 runs).
+//! This is an allowlist with explicit content, size and binary signature checks.
+//! No source-derived game assets, snapshots or arbitrary binary extensions.
 
 use std::path::Path;
 use std::process::Command;
@@ -12,7 +11,7 @@ use anyhow::{Context, Result, bail};
 
 const MAX_FILE_SIZE: usize = 512 * 1024;
 const MAX_ENCODED_RUN: usize = 512;
-// The sole repository-owned graphic is text geometry, never extracted title art.
+// Original SVG and GIF artwork live only under the two exact paths below.
 const BRAND_LOGO_PATH: &str = "docs/assets/neptune-logo.svg";
 const BRAND_GIF_PATH: &str = "docs/assets/neptune-logo-animated.gif";
 const BRAND_RECIPE_PATH: &str = "tools/neptune-logo-animation.cjs";
