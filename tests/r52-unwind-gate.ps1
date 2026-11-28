@@ -90,7 +90,25 @@ foreach($case in $cases){
             $text -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' -and
             $text -match ('test '+$name+' \.\.\. '))
         if($case.Id -eq 'stress'){$ok=$ok -and $text.Contains('60000 walks')}
-        if($case.Id -eq 'gpu-prefix'){$ok=$ok -and $text.Contains('ADAPTER=10de:2882') -and $text.Contains('MISMATCHES=0')}
+        if($case.Id -eq 'gpu-prefix'){
+            # The fixture performs byte-by-byte GPU readback assertions and
+            # reports per-phase active bytes, not a MISMATCHES=0 marker.
+            # Reject missing/reordered phases, a WARP card, or incomplete data.
+            $phases=[regex]::Matches($text,'PHASE=([0-3]) MASK=0x([0-9a-f]+) PREFIX=([0-9]+) GPU_ACTIVE_BYTES=([0-9]+)')
+            $phaseOk=($phases.Count -eq 4)
+            $total=0L
+            for($i=0;$i -lt $phases.Count;$i++){
+                if([int]$phases[$i].Groups[1].Value -ne $i){$phaseOk=$false}
+                $active=[long]$phases[$i].Groups[4].Value
+                if($active -le 0){$phaseOk=$false}
+                $total += $active
+            }
+            $readback=[regex]::Match($text,'ADAPTER=10de:2882 READBACK_BYTES_CHECKED=([0-9]+) DRIVER_FOOTPRINT_BYTES=([0-9]+)')
+            $ok=$ok -and $phaseOk -and $readback.Success -and
+                $total -eq 2796192 -and
+                $total -eq [long]$readback.Groups[1].Value -and
+                [long]$readback.Groups[2].Value -gt 0
+        }
     }
     else {$ok=($results.Count -ge 1 -and $passed -gt 0 -and !$text.Contains('test result: FAILED') -and $text.Contains('test result: ok. '))}
     $hashout=(Get-FileHash -LiteralPath $stdout -Algorithm SHA256).Hash.ToLowerInvariant()
