@@ -1,0 +1,70 @@
+NEPTUNE R58/R59  WINDOWS NATIVE ACCEPTANCE
+DATE              2026-11-28
+TESTED_SOURCE     dbbdeaf0aac01184fdc6b17f54608abc0876005b
+REVIEW_BRANCH     work/r54-worker-panic-join
+TEST_RUNNER       tests/physical-d3d12.ps1
+RUNNER_SHA256     aaea20a8460836f50771a10e759078c74db996f408b6d5e983f13b0c9efee667
+
+MACHINE
+Windows 11 x64 / Core i5-12400F / Rust 1.100.0
+NVIDIA GeForce RTX 4060 8 GB / driver 32.0.16.2101
+D3D12 adapter vendor 10de, device 2882. Not WARP.
+Tiled Resources Tier 4. Debug layer was enabled for sparse and roundtrip.
+
+OBSERVED RELEASE TESTS
+seven separate NVIDIA D3D12 test processes, one worker-failure process
+each: exit 0, one test passed, zero failed, output recorded as raw files
+outside the source tree. The repeated scripted run passed 8/8.
+case        stdout SHA-256
+landing     af78d0e3ecafcb2b60bdd8cc7114da42de045f945d97055f3d52bf06b4a575cc
+retirement  b35c6b94f14c3a8e7f5c73c52b7fbd0147b4d5359a24bab58a5a5bb585cce368
+descriptor  9e663be2eacb5784968410e3fa8a09be70ddf0f579cd028a43524301eb5a5a48
+relay       adeaaa891b6c33b1e3ad733a08ed1880fe311379fb968d0773b5135f0cf61848
+partial     00c4f965957e84949f6f192bd6da1e996236dbca92fb6403a742fdcf2e3602e9
+roundtrip   31befc4e6962b3dfa27b5b515af30349cf48b7435ae50e6bd2b0fa61951af46e
+sparse      cacc695d5fc36cabe3bd6ee7bdab153a57c86ea767e0eb03365e059f34a3980c
+worker      82f7021ff2b6a3e3386d1d726ceaf484e07cfedf097fc422dbdeb4547b31f961
+
+GRAPHICS WITNESSES
+landing: 4096 bytes, in-flight reuse 0, after-fence reuse 1, mismatches 0
+retirement: 65536 bytes, premature drop 0, mismatches 0
+descriptor: 10 capacity boundaries, wrong heap and retired heap rejected
+relay: fences 0/1/2, prefixes 0/2/4, 8192 byte readback parity
+partial: residency 0x1f8 to 0x1fc and unmapped-byte zero fallback
+roundtrip: four phases, 2796192 readback bytes checked
+sparse: three mapping phases, 4194384 readback bytes checked
+worker: R54_FIRST_JOIN=false and R54_SECOND_JOIN=false
+
+EXECUTION PROVENANCE
+Signed DEADBYTE coding receipt a86cbc533d40b505e4882000
+Receipt SHA256 8db87410d9b6bfd18690329be40f20f8c3b1b5f8ca41acd5e5001e08d7e76137
+Signature verification: TRUE (independent coding_receipt_verify)
+Negative: incorrect protected SHA rejected, receipt 6de78939593b79a38cd493f8
+Negative: source-tree output rejected, receipt c4639f6e305571388aae7fff
+Both negative witnesses exited 1 before running GPU work.
+
+CHECKPOINT
+R50 native binary SHA256:
+fc3c8f9be91bc81140c60ed1023698fb21843947997dbd1e0471b86e3b119f0a
+Verified before/after native tests; source tracked files clean.
+No R50 or GAME mutation in this acceptance exercise.
+
+REPRODUCE FROM REPOSITORY ROOT
+Run in Windows PowerShell 5.1 with Rust 1.100.0 and a physical NVIDIA D3D12 adapter.
+Pin the owner's protected checkpoint in $checkpoint before executing:
+& .\tests\physical-d3d12.ps1 -IncludeWorker -ProtectedFile $checkpoint -ExpectedSha256 'fc3c8f9be91bc81140c60ed1023698fb21843947997dbd1e0471b86e3b119f0a'
+The runner uses Cargo --locked --offline --release, separate processes, and
+logs outside the repository. No fixture counts as a pass when zero tests run.
+
+GATES
+CI run 46135061702 on TESTED_SOURCE: success (Clippy, all-features,
+isolated worker witness, workspace tests and GPU suite).
+These CI results predate the addition of the acceptance script.
+R52 safety gate: BLOCKED. Integration and release: BLOCKED.
+Actual gameplay, title frame-time, long-session stability, Vulkan, other
+GPU vendors, and other driver versions: NOT TESTED here.
+No average-FPS, universal compatibility or playable-release claim.
+
+ROLLBACK
+Revert the script and evidence commits on the review branch if needed.
+The production branch and R50 checkpoint are not changed by this record.

@@ -1370,10 +1370,10 @@ fn detile_staging(
         let Some(len) = staging_span(linear.len() as u64, footprint.Offset, pitch, rows as usize, f.Depth as usize) else {
             return false;
         };
-        if mip >= 32 || held & (1 << mip) != 0 {
-            if layout.validate_detile(tiled.len(), mip, slice, len, pitch, pitch * rows as usize).is_err() {
-                return false;
-            }
+        if (mip >= 32 || held & (1 << mip) != 0)
+            && layout.validate_detile(tiled.len(), mip, slice, len, pitch, pitch * rows as usize).is_err()
+        {
+            return false;
         }
     }
     for (i, (footprint, &rows)) in footprints.iter().zip(rows).enumerate() {
@@ -1813,7 +1813,7 @@ mod title_memory_tests {
         let layout = Layout::new(&Desc { dimension: Dimension::Tex2d, width: 1024, height: 1024, depth: 1, mips: 9, element_bytes: 8, block: 4, samples: 1, swizzle: Swizzle::SW_4KB_S }).unwrap();
         let size = layout.size as usize;
         let prefix = layout.bytes_from(3) as usize;
-        assert!(prefix < size && prefix % 4096 == 0);
+        assert!(prefix < size && prefix.is_multiple_of(4096));
         struct Reservation(*mut u8);
         impl Drop for Reservation {
             fn drop(&mut self) { unsafe { VirtualFree(self.0.cast(), 0, MEM_RELEASE); } }
@@ -1889,7 +1889,7 @@ mod title_memory_tests {
         // The existing all-zero policy must not change when excluded bytes
         // are nonzero. Commit one isolated page inside the largest mip.
         let island = staging.layout.mips[0].offset as usize;
-        assert!(island % 4096 == 0 && island > prefix && island + 4096 < size);
+        assert!(island.is_multiple_of(4096) && island > prefix && island + 4096 < size);
         unsafe {
             base.0.write_bytes(0, prefix);
             assert_eq!(VirtualAlloc(base.0.add(island).cast(), 4096, MEM_COMMIT, PAGE_READWRITE), base.0.add(island).cast());
@@ -1908,7 +1908,7 @@ mod title_memory_tests {
         }
         // Grow the mapped prefix without manually invalidating Last.
         let larger = staging.layout.bytes_from(2) as usize;
-        assert!(larger > prefix && larger <= island && larger % 4096 == 0);
+        assert!(larger > prefix && larger <= island && larger.is_multiple_of(4096));
         unsafe {
             assert_eq!(VirtualAlloc(base.0.add(prefix).cast(), larger-prefix, MEM_COMMIT, PAGE_READWRITE), base.0.add(prefix).cast());
             base.0.write_bytes(0x7c, larger);
@@ -1977,7 +1977,7 @@ mod title_memory_tests {
         // Include a same-mask backing replacement without clearing Last.
         for (phase, first) in [3u32, 3, 2, 3].into_iter().enumerate() {
             let prefix = staging.layout.bytes_from(first) as usize;
-            assert!(prefix < size && prefix % 4096 == 0);
+            assert!(prefix < size && prefix.is_multiple_of(4096));
             let byte = |at: usize| ((at.wrapping_mul(131) ^ (at >> 7) ^ (phase * 97)) % 251 + 1) as u8;
             unsafe {
                 let _mapping = crate::watch::title_memory_remapping();
@@ -2131,8 +2131,7 @@ mod title_memory_tests {
         }).unwrap();
         let bytes: Vec<u8> = (0..layout.size).map(|i| (i ^ (i >> 8)) as u8).collect();
         let hash = blake3::hash(&bytes);
-        let mut last = Last::default();
-        last.asked = 42;
+        let mut last = Last { asked: 42, ..Last::default() };
         let mut short = vec![0xa5; 1023];
         assert!(!last.record_detile(hash, None, || layout.detile(&bytes, 0, 0, &mut short, 256, 1024).is_ok()));
         assert!(short.iter().all(|&b| b == 0xa5));

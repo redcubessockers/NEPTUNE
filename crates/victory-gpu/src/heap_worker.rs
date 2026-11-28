@@ -178,9 +178,7 @@ impl Batch {
     pub(crate) fn list(&mut self) -> Option<&HostList> {
         if self.list.is_none() {
             self.outstanding = Outstanding::new();
-            if self.outstanding.is_none() {
-                return None;
-            }
+            self.outstanding.as_ref()?;
             self.list = crate::list::fresh_list();
             if self.list.is_none() {
                 self.outstanding = None;
@@ -302,6 +300,8 @@ struct Job {
 
 static JOB: OnceLock<Job> = OnceLock::new();
 static THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+/// Never convert an observed worker panic into a later successful shutdown.
+static JOIN_FAILED: AtomicBool = AtomicBool::new(false);
 /// Held by whoever runs the pass.
 static PASS: Mutex<()> = Mutex::new(());
 /// Number of recording threads waiting for [`PASS`]. A successful waiter
@@ -468,9 +468,13 @@ fn shutdown_for(timeout: std::time::Duration) -> bool {
         None
     };
     let joined = loop {
-        let Some(thread) = handle.as_ref() else { break true };
+        let Some(thread) = handle.as_ref() else { break !JOIN_FAILED.load(Acquire) };
         if thread.is_finished() {
-            break handle.take().expect("finished worker").join().is_ok();
+            let joined = handle.take().expect("finished worker").join().is_ok();
+            if !joined {
+                JOIN_FAILED.store(true, Release);
+            }
+            break joined && !JOIN_FAILED.load(Acquire);
         }
         let remaining = timeout.saturating_sub(began.elapsed());
         if remaining.is_zero() { break false; }
@@ -485,6 +489,28 @@ extern "C" fn at_exit() {
     if !shutdown_for(std::time::Duration::from_secs(5)) {
         tracing::warn!("heap worker did not stop within five seconds");
     }
+}
+
+#[cfg(test)]
+pub(crate) fn outstanding_count() -> usize {
+    OUTSTANDING.load(Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn stage_fixture(heap: &Heap, list: HostList, entries: &[(u32, u64, u64)]) {
+    assert!(JOB.get().is_none(), "isolated test must not start worker");
+    JOB.get_or_init(|| Job { heap: Mutex::new(None), wake: Condvar::new() });
+    assert!(lock(&READY).is_empty());
+    let mut batch = Batch::new(heap);
+    batch.outstanding = Outstanding::new();
+    assert!(batch.outstanding.is_some());
+    batch.list = Some(list);
+    for &(index, handle, key) in entries {
+        batch.publish(index, handle, key);
+    }
+    drop(batch); // production flush, close and enqueue
+    assert_eq!(lock(&READY).len(), 1);
+    assert_eq!(outstanding_count(), 1);
 }
 
 #[cfg(test)]
@@ -558,6 +584,19 @@ mod tests {
         assert!(joined);
         assert!(!premature, "second shutdown claimed a still-running worker was joined");
         STOP.store(false, Release);
+    }
+
+    #[test]
+    #[ignore = "isolated process-global panicked worker; execute alone"]
+    fn neptune_worker_join_failure_remains_failure() {
+        assert!(lock(&THREAD).is_none());
+        STOP.store(false, Release);
+        *lock(&THREAD) = Some(thread::spawn(|| panic!("R54_EXPECTED_WORKER_PANIC")));
+        let first = shutdown_for(Duration::from_secs(1));
+        let second = shutdown_for(Duration::ZERO);
+        println!("R54_FIRST_JOIN={first} R54_SECOND_JOIN={second}");
+        assert!(!first, "panicked worker must not report a successful join");
+        assert!(!second, "R54_JOIN_FAILURE_BECAME_SUCCESS");
     }
 
     #[test]
@@ -671,26 +710,4 @@ mod tests {
         println!("WAITER_BOUNDARIES=1,2,8,16 ROUNDS=32 HANDOFFS={handoffs} FINAL_PENDING={}", URGENT.load(Acquire));
         assert_eq!(handoffs, 216);
     }
-}
-
-#[cfg(test)]
-pub(crate) fn outstanding_count() -> usize {
-    OUTSTANDING.load(Relaxed)
-}
-
-#[cfg(test)]
-pub(crate) fn stage_fixture(heap: &Heap, list: HostList, entries: &[(u32, u64, u64)]) {
-    assert!(JOB.get().is_none(), "isolated test must not start worker");
-    JOB.get_or_init(|| Job { heap: Mutex::new(None), wake: Condvar::new() });
-    assert!(lock(&READY).is_empty());
-    let mut batch = Batch::new(heap);
-    batch.outstanding = Outstanding::new();
-    assert!(batch.outstanding.is_some());
-    batch.list = Some(list);
-    for &(index, handle, key) in entries {
-        batch.publish(index, handle, key);
-    }
-    drop(batch); // production flush, close and enqueue
-    assert_eq!(lock(&READY).len(), 1);
-    assert_eq!(outstanding_count(), 1);
 }

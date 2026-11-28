@@ -3508,8 +3508,10 @@ fn landing_prefix(line: impl Iterator<Item = Option<u64>>, completed: u64) -> (u
     if completed == u64::MAX { return (0, None); }
     let mut n = 0;
     for fence in line {
-        if let Some(target) = fence {
-            if target > completed { return (n, Some(target)); }
+        if let Some(target) = fence
+            && target > completed
+        {
+            return (n, Some(target));
         }
         n += 1;
     }

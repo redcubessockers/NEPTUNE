@@ -1,0 +1,117 @@
+NEPTUNE R61  R52 NATIVE UNWIND SAFETY
+DATE                 2026-11-28
+STATE                REVIEW ONLY / R52 SAFETY BLOCKED
+BASE COMMIT          4e6cc80f668b196f5022b0effe7a30ca2c455901
+R61 RUNNER           tests/r52-unwind-gate.ps1
+R61 CI               syntax check only. NOT a native R52 execution.
+
+BUG
+RtlLookupFunctionEntry resolved Windows RPCRT4 function range
+[0x587e6, 0x589c3). Code at RVA 0x589bf:
+41 5c 5f 5b c3
+The instruction at +0x589bf is a two-byte POP R12. At +0x589c0,
+byte 5c would be a different opcode if treated as an instruction
+start. The older R52 diagnostic fixture observed STATUS_ACCESS_VIOLATION
+0xc0000005 (Cargo exit -1073741819) when unwinding that synthetic
+mid-instruction PC. This is not evidence that any actual title thread
+executed a mid-instruction PC.
+
+HISTORICAL LOCAL R52 EVIDENCE (DIFFERENT SOURCE TREE FROM GITHUB)
+D:\Projects\NEPTUNE\NEPTUNE-R52-INTEGRATION-20261128\
+red-invalid.txt sha256
+b46999e00935433d0ab078676ca849a30309603296ba168a1a8aebfe906685fe
+green-profile-suite.txt: 12 passed / 0 failed / 1 ignored
+green-gpu-diag-full.txt: 282 passed / 0 failed / 30 ignored
+green-workspace-release.txt: 697 passed / 0 failed / 44 ignored
+green-portable-and-forensic.txt: 3 isolated tests passed / 0 failed
+green-physical-gpu.txt includes 2 failures caused by software adapter
+selection. The corrected separate file green-physical-gpu-corrected.txt
+is the relevant physical witness. These are distinct process runs.
+The old logs do not independently bind to the current D: source tree.
+
+CURRENT R52 LOCAL CANDIDATE (READ ONLY)
+profile.rs SHA-256
+f97badcba82927afcd74a059d086ea43bdfc1a00da47a32e094587fea7feba93
+profile/tests.rs SHA-256
+c9c9ad2a34563efd49edfd3f54f5bd57c82b4f3304f00d4abbf2a432e1d5467a
+R50 checkpoint SHA-256 (read-only pin)
+fc3c8f9be91bc81140c60ed1023698fb21843947997dbd1e0471b86e3b119f0a
+
+R61 COUNTEREXAMPLES
+Wrong R50 hash: exit 1 PREIMAGE_DRIFT before Cargo execution,
+receipt 619d295580029c430b67b07a;
+Ed25519 signature independently verified.
+Original R61 command compiled without the Cargo feature "diagnostics".
+Native output "running 0 tests", 289 filtered, stdout SHA-256
+bd266705114c21c82f1d47f146e7fa062e3414603d36d905b5333bc03caabfd0
+This is a HARNESS CONFIGURATION DEFECT, not a source PASS.
+The tool failed internally after that output; command receipt UNKNOWN.
+The repaired GitHub runner enables diagnostics on GPU tests and
+all-features on the workspace, checks exact test execution counts and
+nonzero aggregate passes, and restricts logs and target to TEMP.
+Attempted transfer to host failed with CREATE_RENAME_NTSTATUS=c0000043.
+Remote source readback succeeded. Native replay of the repaired
+runner: NOT TESTED.
+
+NATIVE REPLAY, AFTER HOST STAGING BECOMES AVAILABLE
+Use Windows PowerShell 5.1, installed Rust 1.100.0, real Windows x64.
+Supply explicit paths for -SourceRoot, -OutputRoot, -TargetRoot,
+-ProtectedR50 and the three -Expected* SHA pins shown above.
+Execute the same runner by -Phase targeted, gpu, workspace and
+physical, one phase at a time. Outputs and build targets must be
+under TEMP and outside the project source. Never write to R50 or GAME.
+The native RPCRT4 fixture is version-pinned to Windows build 26100.
+Reject a changed DLL or any zero-test result. Analyze raw stderr,
+return codes and SHA-256 after each native run.
+
+RELEASE BOUNDARIES
+A passing profiler fixture cannot prove entire debugger or renderer
+memory safety. R52 requires a complete tested candidate, source
+provenance, real diagnostics regression, GPU and native title session
+verification before integration. Neither the R52 changes nor this
+document have been merged. R50 remains unchanged.
+Inherited GPU/loader code carries GPL-3.0-or-later metadata while
+the root LICENSE says CC0; rights to redistribute all inherited
+source as CC0 remain unresolved. No game data is included.
+
+R64  CRASH UNWINDER RETURN SLOT ARITHMETIC
+SOURCE COMMIT        97f32e6dd42e4ff3a1113ebb9ea61dcd7bd46e99
+SOURCE PATH          crates/victory-loader/src/crash.rs
+ROOT CAUSE           rsp + 8 wraps on usize overflow in release;
+                     read() of a misaligned *const u64 violates its precondition.
+CHANGE               stack_qword_in_bounds rejects low=0, out-of-range,
+                     unaligned and checked_add(8) overflow. No Win32/D3D12
+                     API change. First faulting RIP remains recorded.
+REGRESSION           crash::tests::invalid_stack_qword_is_rejected_before_unwind
+                     synthetic malformed CONTEXT and boundary address oracle.
+                     No invalid native pointer dereference performed.
+NATIVE ENVIRONMENT   Windows 11 x64, Rust 1.100.0, isolated public GitHub
+                     shallow clone in %TEMP%, release profile, --offline.
+NATIVE TEST          cargo test --locked --offline --release
+                       -p victory-loader --lib
+                       invalid_stack_qword_is_rejected_before_unwind
+                       -- --nocapture --test-threads=1
+NATIVE OBSERVATION   1 passed, 0 failed, 0 ignored, 27 filtered out.
+NATIVE STDOUT SHA    6ec1b9dadfd67c8a1791f611fca09a4a6ea1703e5c1b09861ed43498647e24f7
+NATIVE STDERR SHA    731122fefd6cbbd1ddd0d0b0e69eeb130a475292c43fed7eef1f665316d35762
+NATIVE RECEIPT      UNKNOWN. MCP command returned internal failure although
+                     the actual native stdout/stderr files were inspected.
+GITHUB CI           https://github.com/redcubessockers/NEPTUNE/actions/runs/46142339489
+                     1 check job SUCCESS, strict Clippy and all-features
+                     Clippy SUCCESS, 24 Rust test-result blocks aggregated:
+                     688 passed / 0 failed / 41 ignored. The new test
+                     executed on Windows (28-loader-tests block).
+ROLLBACK             Git revert the R64 source-only draft review commit;
+                     do not mutate the protected local R50 or GAME binary.
+SIDE EFFECTS         New isolated %TEMP% clone, Cargo compilation and logs.
+                     Remote source-only GitHub commit; no runtime deployment.
+BOUNDARY             This checks integer arithmetic and pointer alignment,
+                     NOT committed pages, arbitrary corrupted unwind metadata,
+                     RtlVirtualUnwind safety, full title execution or gameplay.
+R50 STATUS           No local write attempted. Fresh content hash NOT VERIFIED
+                     in this R64 step: read-only stat returned sha256=null,
+                     and a subsequent inline hash probe was blocked by
+                     CREATE_RENAME_NTSTATUS=c0000043 while staging its script.
+                     Last known pinned SHA remains
+                     fc3c8f9be91bc81140c60ed1023698fb21843947997dbd1e0471b86e3b119f0a.
+RELEASE              R52 SAFETY GATE BLOCKED. Draft only. No merge.
