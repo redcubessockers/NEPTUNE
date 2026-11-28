@@ -328,6 +328,19 @@ impl Engines {
     }
 }
 
+/// Convert a PDH snapshot into the two displayed adapter load figures.
+fn adapter_loads(
+    looked: Option<&[Engine]>, pid: u32, adapter: AdapterLuid,
+) -> (Option<f32>, Option<f32>) {
+    match looked {
+        Some(e) => (
+            Some(busiest_on_adapter(e, None, adapter).0),
+            Some(busiest_on_adapter(e, Some(pid), adapter).0),
+        ),
+        None => (None, None),
+    }
+}
+
 /// The thread: a look a second, for as long as the process runs.
 fn run(adapter: AdapterLuid) {
     let mut engines = Engines::open();
@@ -363,13 +376,7 @@ fn run(adapter: AdapterLuid) {
             / wall
             * 100.0;
         let looked = engines.as_mut().and_then(Engines::look);
-        let (gpu_all, gpu_ours) = match &looked {
-            Some(e) => (
-                Some(busiest_on_adapter(e, None, adapter).0),
-                Some(busiest_on_adapter(e, Some(pid), adapter).0),
-            ),
-            None => (None, None),
-        };
+        let (gpu_all, gpu_ours) = adapter_loads(looked.as_deref(), pid, adapter);
         let (ram_ours_mb, ram_free_mb) = memory();
         let stats = Stats {
             cpu_all: cpu_all.clamp(0.0, 100.0) as f32,
@@ -460,6 +467,40 @@ mod tests {
         assert_eq!(parse_instance("pid_8_luid_0x0_0x1_phys_0_eng_5_engtype_Compute_0"), Some((8, second, "Compute_0")));
         assert_eq!(parse_instance("_Total"), None);
         assert_eq!(parse_instance("pid_x_engtype_3D"), None);
+    }
+
+    #[test]
+    fn absent_adapter_is_unknown_not_idle() {
+        let selected = AdapterLuid { high: 0, low: 1 };
+        let other = Engine {
+            pid: 7, key: EngineKey { luid_high: 0, luid_low: 2, phys: 0, engine: 0 },
+            kind: "3D".into(), percent: 99.0,
+        };
+        assert_eq!(adapter_loads(Some(&[other]), 7, selected), (None, None));
+    }
+
+    #[test]
+    fn unusable_adapter_samples_are_unknown() {
+        let selected = AdapterLuid { high: 0, low: 1 };
+        let e = |percent| Engine {
+            pid: 7, key: EngineKey { luid_high: 0, luid_low: 1, phys: 0, engine: 0 },
+            kind: "3D".into(), percent,
+        };
+        assert_eq!(adapter_loads(Some(&[]), 7, selected), (None, None));
+        assert_eq!(adapter_loads(Some(&[e(f64::NAN), e(f64::INFINITY), e(-1.0)]), 7, selected), (None, None));
+    }
+
+    #[test]
+    fn observed_idle_and_absent_process_remain_zero() {
+        let selected = AdapterLuid { high: 0, low: 1 };
+        let e = |percent| Engine {
+            pid: 7, key: EngineKey { luid_high: 0, luid_low: 1, phys: 0, engine: 0 },
+            kind: "3D".into(), percent,
+        };
+        assert_eq!(adapter_loads(None, 7, selected), (None, None));
+        assert_eq!(adapter_loads(Some(&[e(0.0)]), 7, selected), (Some(0.0), Some(0.0)));
+        assert_eq!(adapter_loads(Some(&[e(31.0)]), 8, selected), (Some(31.0), Some(0.0)));
+        assert_eq!(adapter_loads(Some(&[e(31.0)]), 7, selected), (Some(31.0), Some(31.0)));
     }
 
     #[test]
