@@ -206,9 +206,13 @@ fn fit(parent: HWND, x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32,
 /// The arithmetic performed when a top-level window must be centred.
 /// Kept independent from the system work-area query for boundary testing.
 fn center_in(area: &RECT, w: i32, h: i32) -> (i32, i32) {
-    let left = area.left + (area.right - area.left - w) / 2;
-    let top = area.top + (area.bottom - area.top - h) / 2;
-    (left, top)
+    // The center calculation must use the same widened coordinate domain
+    // as fit_into. Here w/h already fit in their positive monitor spans.
+    let left = i64::from(area.left)
+        + (i64::from(area.right) - i64::from(area.left) - i64::from(w)) / 2;
+    let top = i64::from(area.top)
+        + (i64::from(area.bottom) - i64::from(area.top) - i64::from(h)) / 2;
+    (left as i32, top as i32)
 }
 
 /// `width` x `height` scaled down to fit `area`, or unchanged if it fits
