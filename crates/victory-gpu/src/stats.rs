@@ -11,8 +11,8 @@
 //!   frame held by that thread.
 //! - The card: Windows' own counters (`\GPU Engine(*)\Utilization
 //!   Percentage`, the ones the Task Manager shows), which name the process
-//!   and the engine of every figure. For the whole card and for this
-//!   process: the busiest engine's sum, as the Task Manager does it. They
+//!   and the engine of every figure. For the host D3D12 adapter, across
+//!   all processes and this process: the busiest physical engine. They
 //!   work for every maker of cards and load no library of the maker's.
 //! - Memory: this process's committed bytes and the PC's free physical
 //!   memory. (The card's memory is asked of the host by the box itself.)
@@ -53,11 +53,21 @@ pub(crate) fn now() -> Option<(u64, Stats)> {
     now.1.map(|s| (now.0, s))
 }
 
-/// Starts the looks, once.
-pub(crate) fn start() {
+/// Starts the looks, once, bound to the exact adapter backing the host D3D12 device.
+pub(crate) fn start(device: &windows::Win32::Graphics::Direct3D12::ID3D12Device) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let spawned = std::thread::Builder::new().name("victory-stats".into()).spawn(run);
+        // SAFETY: GetAdapterLuid is a read-only query on the live host device.
+        let luid = unsafe { device.GetAdapterLuid() };
+        let adapter = AdapterLuid { high: luid.HighPart as u32, low: luid.LowPart };
+        tracing::info!(
+            high = format_args!("{:#010x}", adapter.high),
+            low = format_args!("{:#010x}", adapter.low),
+            "the corner box's GPU counters are bound to the host D3D12 adapter LUID"
+        );
+        let spawned = std::thread::Builder::new()
+            .name("victory-stats".into())
+            .spawn(move || run(adapter));
         if let Err(e) = spawned {
             tracing::warn!(%e, "the load figures of the corner box have no thread: the box shows the frame rate only");
         }
@@ -212,11 +222,18 @@ fn parse_instance(name: &str) -> Option<(u32, EngineKey, &str)> {
 }
 
 /// Sum per-process utilization only for the SAME physical engine. Report
-/// the busiest engine per type across adapters; never sum different engines.
-fn busiest(engines: &[Engine], pid: Option<u32>) -> (f32, HashMap<&str, f64>) {
+/// the busiest engine per type; never sum different engines or adapters.
+fn busiest_filtered(
+    engines: &[Engine],
+    pid: Option<u32>,
+    adapter: Option<AdapterLuid>,
+) -> (f32, HashMap<&str, f64>) {
     let mut by_engine: HashMap<EngineKey, (f64, &str)> = HashMap::new();
     for e in engines.iter().filter(|e| {
-        pid.is_none_or(|p| p == e.pid) && e.percent.is_finite() && e.percent >= 0.0
+        pid.is_none_or(|p| p == e.pid)
+            && adapter.is_none_or(|a| a.high == e.key.luid_high && a.low == e.key.luid_low)
+            && e.percent.is_finite()
+            && e.percent >= 0.0
     }) {
         let entry = by_engine.entry(e.key).or_insert((0.0, e.kind.as_str()));
         entry.0 += e.percent;
@@ -231,14 +248,16 @@ fn busiest(engines: &[Engine], pid: Option<u32>) -> (f32, HashMap<&str, f64>) {
     (top as f32, by_kind)
 }
 
-#[cfg(test)]
+fn busiest(engines: &[Engine], pid: Option<u32>) -> (f32, HashMap<&str, f64>) {
+    busiest_filtered(engines, pid, None)
+}
+
 fn busiest_on_adapter(
     engines: &[Engine],
     pid: Option<u32>,
-    _adapter: AdapterLuid,
+    adapter: AdapterLuid,
 ) -> (f32, HashMap<&str, f64>) {
-    // RED scaffold only: current R71 behavior still sees every adapter.
-    busiest(engines, pid)
+    busiest_filtered(engines, pid, Some(adapter))
 }
 
 // Keep the PDH per-instance status decision explicit for regression tests.
@@ -309,7 +328,7 @@ impl Engines {
 }
 
 /// The thread: a look a second, for as long as the process runs.
-fn run() {
+fn run(adapter: AdapterLuid) {
     let mut engines = Engines::open();
     if engines.is_none() {
         tracing::info!("the system's counters of the card's engines did not open: the corner box shows no card load");
@@ -344,7 +363,10 @@ fn run() {
             * 100.0;
         let looked = engines.as_mut().and_then(Engines::look);
         let (gpu_all, gpu_ours) = match &looked {
-            Some(e) => (Some(busiest(e, None).0), Some(busiest(e, Some(pid)).0)),
+            Some(e) => (
+                Some(busiest_on_adapter(e, None, adapter).0),
+                Some(busiest_on_adapter(e, Some(pid), adapter).0),
+            ),
             None => (None, None),
         };
         let (ram_ours_mb, ram_free_mb) = memory();
@@ -364,7 +386,8 @@ fn run() {
         if looks.is_multiple_of(5) {
             let kinds = |pid: Option<u32>| {
                 let Some(e) = &looked else { return "not known".to_owned() };
-                let mut kinds: Vec<(&str, f64)> = busiest(e, pid).1.into_iter().filter(|(_, p)| *p >= 0.5).collect();
+                let mut kinds: Vec<(&str, f64)> =
+                    busiest_on_adapter(e, pid, adapter).1.into_iter().filter(|(_, p)| *p >= 0.5).collect();
                 kinds.sort_by(|a, b| b.1.total_cmp(&a.1));
                 if kinds.is_empty() {
                     return "nothing at work".to_owned();
@@ -505,23 +528,51 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[ignore = "native Windows GPU Engine PDH snapshot; requires real GPU counters"]
+    #[ignore = "native Windows D3D12 adapter LUID + GPU Engine PDH snapshot"]
     fn physical_gpu_engine_pdh_snapshot() {
         use std::collections::HashSet;
+        use windows::Win32::Graphics::{
+            Direct3D::D3D_FEATURE_LEVEL_12_0,
+            Direct3D12::{D3D12CreateDevice, ID3D12Device},
+        };
+
+        let mut device: Option<ID3D12Device> = None;
+        // SAFETY: same default-adapter creation path used by the production host.
+        unsafe {
+            D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device)
+                .expect("create native default D3D12 device");
+        }
+        let device = device.expect("D3D12CreateDevice returned no device");
+        // SAFETY: read-only identity query on the device just created.
+        let luid = unsafe { device.GetAdapterLuid() };
+        let selected = AdapterLuid { high: luid.HighPart as u32, low: luid.LowPart };
 
         let mut pdh = Engines::open().expect("open native Windows GPU Engine counter");
         std::thread::sleep(Duration::from_millis(1100)); // second PDH rate sample
         let samples = pdh.look().expect("read formatted GPU Engine counter array");
         assert!(!samples.is_empty(), "Windows returned no usable GPU engine instances");
+
         let adapters: HashSet<_> = samples.iter()
             .map(|e| (e.key.luid_high, e.key.luid_low)).collect();
         let engine_keys: HashSet<_> = samples.iter().map(|e| e.key).collect();
-        assert!(!adapters.is_empty() && !engine_keys.is_empty());
-        let (all, by_type) = busiest(&samples, None);
-        assert!(all.is_finite() && (0.0..=100.0).contains(&all));
+        let selected_instances = samples.iter()
+            .filter(|e| e.key.luid_high == selected.high && e.key.luid_low == selected.low)
+            .count();
+        assert!(
+            selected_instances > 0,
+            "PDH returned no GPU Engine instance for the D3D12 device LUID {:#010x}:{:#010x}",
+            selected.high,
+            selected.low,
+        );
+
+        let (global, _) = busiest(&samples, None);
+        let (host, by_type) = busiest_on_adapter(&samples, None, selected);
+        assert!(host.is_finite() && (0.0..=100.0).contains(&host));
+        assert!(host <= global + f32::EPSILON, "host-adapter load cannot exceed the global busiest engine");
         println!(
-            "R71_NATIVE_PDH_INSTANCES={} ADAPTER_LUIDS={} PHYSICAL_ENGINES={} BUSIEST_PERCENT={} ENGINE_TYPES={}",
-            samples.len(), adapters.len(), engine_keys.len(), all, by_type.len(),
+            "R72_DXGI_PDH_LUID={:#010x}:{:#010x} PDH_INSTANCES={} SELECTED_INSTANCES={} ADAPTER_LUIDS={} PHYSICAL_ENGINES={} GLOBAL_BUSY={} HOST_BUSY={} HOST_ENGINE_TYPES={}",
+            selected.high, selected.low, samples.len(), selected_instances, adapters.len(),
+            engine_keys.len(), global, host, by_type.len(),
         );
     }
 
