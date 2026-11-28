@@ -72,5 +72,44 @@ jobs:
           if ($document.DocumentElement.GetAttribute('width') -cne '1280') { throw 'WIDTH_DRIFT' }
           if ($document.DocumentElement.GetAttribute('height') -cne '300') { throw 'HEIGHT_DRIFT' }
           $readme = Get-Content -LiteralPath README.md -Raw
-          if (!$readme.Contains('src="docs/assets/neptune-logo.svg"')) { throw 'README_LOGO_MISSING' }
+          if (!$readme.Contains('srcset="docs/assets/neptune-logo.svg"')) { throw 'README_STATIC_FALLBACK_MISSING' }
+          if (!$readme.Contains('src="docs/assets/neptune-logo-animated.gif"')) { throw 'README_GIF_MISSING' }
           Write-Output "R62_BRAND_XML=PASS SHA256=$actual"
+      - name: Check deterministic GIF encoder source
+        run: node --check tools/neptune-logo-animation.cjs
+      - name: Check generated GIF byte parity without rewriting
+        run: node tools/neptune-logo-animation.cjs --check
+      - name: Decode all GIF frames independently with GDI+ and check motion
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gif = 'docs/assets/neptune-logo-animated.gif'
+          $expected = '9dc5967c39676fad0a55ec528d502b690b1ad6b570ac0f60fa6f0483d857c535'
+          $actual = (Get-FileHash -LiteralPath $gif -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -cne $expected) { throw "GIF_SHA256_DRIFT $actual" }
+          Add-Type -AssemblyName System.Drawing
+          $source = (Resolve-Path -LiteralPath $gif).Path
+          $image = [System.Drawing.Image]::FromFile($source)
+          try {
+            if ($image.Width -ne 1280 -or $image.Height -ne 300) { throw 'GIF_DIMENSION_DRIFT' }
+            $time = [System.Drawing.Imaging.FrameDimension]::Time
+            $frames = $image.GetFrameCount($time)
+            if ($frames -ne 16) { throw "GIF_FRAME_COUNT_DRIFT $frames" }
+            $bitmap = [System.Drawing.Bitmap]$image
+            $first = $null
+            $last = $null
+            $changed = $null
+            for ($i=0; $i -lt $frames; $i++) {
+              [void]$image.SelectActiveFrame($time, $i)
+              $p = $bitmap.GetPixel(851, 37).ToArgb()
+              [void]$bitmap.GetPixel(355, 227)
+              if ($i -eq 0) { $first = $p }
+              if ($i -eq 1) { $changed = $p }
+              if ($i -eq 15) { $last = $p }
+            }
+            if ($first -eq $changed) { throw 'GIF_NOT_ANIMATING' }
+            if ($first -ne $last) { throw 'GIF_LOOP_SEAM' }
+            Write-Output "R63_GIF_DECODE=PASS FRAMES=$frames SHA256=$actual"
+          } finally {
+            $image.Dispose()
+          }
