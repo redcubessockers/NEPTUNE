@@ -190,6 +190,12 @@ fn busiest(engines: &[Engine], pid: Option<u32>) -> (f32, HashMap<&str, f64>) {
     (top as f32, by_kind)
 }
 
+// Keep the PDH per-instance status decision explicit for regression tests.
+fn counter_status_valid(status: u32) -> bool {
+    // pdhmsg.h: VALID_DATA (0) and NEW_DATA (1) both carry valid values.
+    matches!(status, 0 | 1)
+}
+
 impl Engines {
     fn open() -> Option<Engines> {
         use windows_sys::Win32::System::Performance::{PdhAddEnglishCounterW, PdhCollectQueryData, PdhOpenQueryW};
@@ -237,7 +243,7 @@ impl Engines {
             }
             let mut out = Vec::with_capacity(count as usize);
             for item in std::slice::from_raw_parts(items, count as usize) {
-                if item.szName.is_null() || item.FmtValue.CStatus != 0 {
+                if item.szName.is_null() || !counter_status_valid(item.FmtValue.CStatus) {
                     continue;
                 }
                 let len = (0..512).take_while(|&i| *item.szName.add(i) != 0).count();
@@ -334,6 +340,20 @@ fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pdh_new_data_is_a_valid_sample() {
+        // pdhmsg.h: PDH_CSTATUS_NEW_DATA = 0x00000001.
+        assert!(counter_status_valid(1));
+    }
+
+    #[test]
+    fn pdh_unchanged_data_and_error_statuses() {
+        assert!(counter_status_valid(0));
+        for status in [2, 0x800007d1, 0x800007d5, 0xc0000bba, u32::MAX] {
+            assert!(!counter_status_valid(status), "unexpected accepted status {status:#x}");
+        }
+    }
 
     #[test]
     fn an_instance_name_says_the_process_and_the_engine() {
