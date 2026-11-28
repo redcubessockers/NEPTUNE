@@ -544,6 +544,18 @@ fn unwind(context: CONTEXT) -> Vec<u64> {
 #[repr(C, align(16))]
 pub(crate) struct Aligned16(pub(crate) CONTEXT);
 
+/// A return slot must be entirely inside this stack and aligned for a
+/// `*const u64` read. Invalid contexts are expected in a crash handler:
+/// unchecked `rsp + 8` can wrap and turn a rejected pointer into an accepted one.
+fn stack_qword_in_bounds(rsp: usize, low: usize, high: usize) -> bool {
+    low != 0
+        && rsp >= low
+        && rsp.is_multiple_of(std::mem::align_of::<u64>())
+        && rsp
+            .checked_add(std::mem::size_of::<u64>())
+            .is_some_and(|end| end <= high)
+}
+
 /// [`unwind`] for any thread of the process, its stack being `low..high`;
 /// pushes no more than `MAX_FRAMES`, so it does not allocate when `frames`
 /// has that capacity (another thread may be suspended holding the heap).
@@ -555,9 +567,10 @@ pub(crate) fn unwind_into(context: CONTEXT, low: usize, high: usize, frames: &mu
     let context = &mut aligned.0;
     frames.push(context.Rip);
     while frames.len() < MAX_FRAMES {
-        // Stop where reading the stack would fault inside this handler.
+        // Reject malformed, unaligned and overflowing return slots before
+        // any pointer read. Range validation is not a committed-page proof.
         let rsp = context.Rsp as usize;
-        if rsp < low || rsp + 8 > high {
+        if !stack_qword_in_bounds(rsp, low, high) {
             break;
         }
         let mut image = 0;
@@ -664,6 +677,33 @@ mod tests {
     use windows_sys::Win32::System::Diagnostics::Debug::{
         EXCEPTION_RECORD, RtlCaptureContext, RtlCaptureStackBackTrace,
     };
+
+    #[test]
+    fn invalid_stack_qword_is_rejected_before_unwind() {
+        // Synthetic address arithmetic only. Never read a fabricated pointer.
+        let low = 0x1000usize;
+        let high = 0x2000usize;
+        for rsp in [0x1000, 0x1008, 0x1ff0, 0x1ff8] {
+            assert!(stack_qword_in_bounds(rsp, low, high), "valid rsp={rsp:#x}");
+        }
+        for rsp in [0, 0xff8, 0x1001, 0x1ff9, 0x2000, usize::MAX] {
+            assert!(!stack_qword_in_bounds(rsp, low, high), "invalid rsp={rsp:#x}");
+        }
+        assert!(!stack_qword_in_bounds(0, 0, 8), "null stack");
+        assert!(!stack_qword_in_bounds(0x1000, 0x2000, 0x1000), "reversed bounds");
+        assert!(!stack_qword_in_bounds(usize::MAX - 7, low, usize::MAX), "overflow at stack top");
+        assert!(!stack_qword_in_bounds(usize::MAX, low, usize::MAX), "overflow at address ceiling");
+
+        // A corrupt CONTEXT with a wrapped RSP must not enter the native
+        // unwind API or load an invalid pointer. Only the faulting PC remains.
+        // SAFETY: zeroed CONTEXT is a valid structure and no pointer is read.
+        let mut context: CONTEXT = unsafe { std::mem::zeroed() };
+        context.Rip = 0x1234;
+        context.Rsp = usize::MAX as u64;
+        let mut frames = Vec::new();
+        unwind_into(context, low, usize::MAX, &mut frames);
+        assert_eq!(frames, [0x1234]);
+    }
 
     #[test]
     #[inline(never)]
